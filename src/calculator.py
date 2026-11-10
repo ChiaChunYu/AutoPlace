@@ -18,9 +18,9 @@ class Objective(object):
         return self.wirelength.forward(pos, self.ps.wa_coeff)[1], self.density.forward(pos)[0]
 
     def __call__(self, pos):
-        self.density.clamp_(pos)
+        """pos must be inside the region (the optimizer keeps it there: `density.pos_lo`, `density.pos_hi`)."""
         _, wl_grad, self.hpwl = self.wirelength.forward(pos, self.ps.wa_coeff)
-        grad, self.overflow, _ = self.density.forward(pos, wl_grad, self.ps.density_weight,
+        grad, self.overflow = self.density.forward(pos, wl_grad, self.ps.density_weight,
                                                       self.ps.precond_coef * self.ps.density_weight)
         self.evals += 1
         return grad

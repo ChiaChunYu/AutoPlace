@@ -122,9 +122,25 @@ __global__ void density_grad_kernel(const float* pos, const float* size, const f
     grad[2 * i + 1] = gy * scale;
 }
 
+// One thread per bin: from the two fixed-point maps to what the rest of the iteration needs.
+//   rho  [2 nbx][2 nby]  total density (cells + blocked area + fillers), mirrored in both axes for the FFT
+//   over [nbx][nby]      density of the cells and the blocked area above the target (its sum is the overflow)
+__global__ void density_post_kernel(const unsigned long long* map, const float* fixed, float target, int nbx, int nby,
+                                    float* rho, float* over) {
+    int b = blockIdx.x * blockDim.x + threadIdx.x, nb = nbx * nby;
+    if (b >= nb) return;
+    int bx = b / nby, by = b - bx * nby, w = 2 * nby, mx = 2 * nbx - 1 - bx, my = w - 1 - by;
+    float mov = (float)((double)map[b] / DENSITY_SCALE) + fixed[b];
+    float r = mov + (float)((double)map[nb + b] / DENSITY_SCALE);
+    over[b] = fmaxf(mov - target, 0.f);
+    rho[bx * w + by] = r; rho[bx * w + my] = r; rho[mx * w + by] = r; rho[mx * w + my] = r;
+}
+
 void density_map(const float* pos, const float* size, const float* ratio, int num_nodes, int num_mov, float bx,
-                 float by, int nbx, int nby, unsigned long long* map) {
+                 float by, int nbx, int nby, unsigned long long* map, const float* fixed, float target, float* rho,
+                 float* over) {
     density_map_kernel<<<GRID(num_nodes), BLOCK>>>(pos, size, ratio, num_nodes, num_mov, 1.f / bx, 1.f / by, nbx, nby, map);
+    density_post_kernel<<<GRID(nbx * nby), BLOCK>>>(map, fixed, target, nbx, nby, rho, over);
 }
 
 void density_grad(const float* pos, const float* size, const float* ratio, const float* field, const float* wl_grad,
@@ -132,4 +148,20 @@ void density_grad(const float* pos, const float* size, const float* ratio, const
                   float by, int nbx, int nby, float* grad) {
     density_grad_kernel<<<GRID(num_nodes), BLOCK>>>(pos, size, ratio, field, wl_grad, pins, area, num_nodes, num_wl,
                                                     weight, precond, 1.f / bx, 1.f / by, nbx, nby, grad);
+}
+
+// ---------------------------------------------------------------- optimizer step
+// One thread per coordinate:  u_next = v - alpha g;  v_next = u_next + coef (u_next - u), kept inside [lo, hi].
+__global__ void nesterov_step_kernel(const float* u, const float* v, const float* g, const float* lo, const float* hi,
+                                     float alpha, float coef, int n, float* u_next, float* v_next) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float un = v[i] - alpha * g[i];
+    u_next[i] = un;
+    v_next[i] = fminf(fmaxf(un + coef * (un - u[i]), lo[i]), hi[i]);
+}
+
+void nesterov_step(const float* u, const float* v, const float* g, const float* lo, const float* hi, float alpha,
+                   float coef, int n, float* u_next, float* v_next) {
+    nesterov_step_kernel<<<GRID(n), BLOCK>>>(u, v, g, lo, hi, alpha, coef, n, u_next, v_next);
 }

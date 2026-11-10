@@ -3,7 +3,9 @@
 
 void wa_wirelength(const float*, const int*, const float*, const int*, const int*, const int*, int, int, float, float*,
                    float*, float*);
-void density_map(const float*, const float*, const float*, int, int, float, float, int, int, unsigned long long*);
+void density_map(const float*, const float*, const float*, int, int, float, float, int, int, unsigned long long*,
+                 const float*, float, float*, float*);
+void nesterov_step(const float*, const float*, const float*, const float*, const float*, float, float, int, float*, float*);
 void density_grad(const float*, const float*, const float*, const float*, const float*, const float*, const float*, int,
                   int, float, float, float, float, int, int, float*);
 
@@ -27,12 +29,21 @@ std::tuple<Tensor, Tensor> wa(Tensor pos, Tensor pin_cell, Tensor pin_off, Tenso
     return {grad, out};
 }
 
-// -> [2, nbx, nby] density of the movable cells and of the fillers, in bin areas
-Tensor dmap(Tensor pos, Tensor size, Tensor ratio, int num_mov, float bx, float by, int nbx, int nby) {
+// -> (total density mirrored for the FFT [2 nbx, 2 nby], density of the cells + blocked area above the target [nbx, nby])
+std::tuple<Tensor, Tensor> dmap(Tensor pos, Tensor size, Tensor ratio, int num_mov, float bx, float by, int nbx, int nby,
+                                Tensor fixed, float target) {
     Tensor map = torch::zeros({2, nbx, nby}, pos.options().dtype(torch::kInt64));
+    Tensor rho = pos.new_empty({2 * nbx, 2 * nby}), over = pos.new_empty({nbx, nby});
     density_map(F(pos), F(size), F(ratio), pos.size(0), num_mov, bx, by, nbx, nby,
-                (unsigned long long*)map.data_ptr<int64_t>());
-    return map.to(torch::kFloat32) / 4294967296.0;
+                (unsigned long long*)map.data_ptr<int64_t>(), F(fixed), target, rho.data_ptr<float>(), over.data_ptr<float>());
+    return {rho, over};
+}
+
+// -> (u_next, v_next) of Nesterov's method; v_next is kept inside [lo, hi]
+std::tuple<Tensor, Tensor> nstep(Tensor u, Tensor v, Tensor g, Tensor lo, Tensor hi, float alpha, float coef) {
+    Tensor u_next = torch::empty_like(v), v_next = torch::empty_like(v);
+    nesterov_step(F(u), F(v), F(g), F(lo), F(hi), alpha, coef, v.numel(), u_next.data_ptr<float>(), v_next.data_ptr<float>());
+    return {u_next, v_next};
 }
 
 // field [2, 2 nbx, 2 nby]; wl_grad [num_wl, 2] (num_wl may be 0) -> preconditioned gradient [num_nodes, 2]
@@ -46,6 +57,7 @@ Tensor dgrad(Tensor pos, Tensor size, Tensor ratio, Tensor field, Tensor wl_grad
 
 PYBIND11_MODULE(gp_cuda, m) {
     m.def("wa", &wa, "WA wirelength: gradient and per-net (WA, HPWL)");
-    m.def("density_map", &dmap, "density maps of the movable cells and the fillers");
+    m.def("density_map", &dmap, "total density (mirrored) and the density above the target");
+    m.def("nesterov_step", &nstep, "u_next and the clamped v_next");
     m.def("density_grad", &dgrad, "gradient of the objective of every node from the field");
 }

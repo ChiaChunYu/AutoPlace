@@ -42,7 +42,12 @@ class PlaceData(object):
             raise ValueError("%d macro(s) of the DEF are not in the LEF: %s" % (len(unknown), ", ".join(unknown[:5])))
         macro_size = np.array([[lef.macros[m].width, lef.macros[m].height] for m in names]).reshape(-1, 2) * dbu
         size_dbu = macro_size[comp_macro]
-        self.mov_index = np.nonzero(~d.comp_fixed)[0]                 # component index of every movable cell
+        # fixed = FIXED / COVER in the DEF, and every placed component that is not a core cell (pads, corner and
+        # ring cells, endcaps, macro blocks): those stay where the DEF puts them
+        core = np.array([lef.macros[m].cls.startswith("CORE") for m in names], dtype=bool)
+        self.fixed = d.comp_fixed | (d.comp_placed & ~core[comp_macro])
+        self.kept_in_place = int((self.fixed & ~d.comp_fixed).sum())
+        self.mov_index = np.nonzero(~self.fixed)[0]                   # component index of every movable cell
         self.num_mov = len(self.mov_index)
         mov_id = np.full(len(comp_macro), self.num_mov, dtype=np.int64)
         mov_id[self.mov_index] = np.arange(self.num_mov)
@@ -51,7 +56,7 @@ class PlaceData(object):
 
         # fixed components and hard placement blockages: area no cell may use
         block = [tuple(b) for b in d.blockages]
-        for i in np.nonzero(d.comp_fixed)[0]:
+        for i in np.nonzero(self.fixed)[0]:
             w, h = orient_size(size_dbu[i, 0], size_dbu[i, 1], d.comp_orient[i])
             x, y = d.comp_xy[i]
             block.append((x, y, x + w, y + h))
@@ -127,9 +132,14 @@ class PlaceData(object):
         ll = (np.asarray(pos, dtype=np.float64) - self.size / 2) * self.unit_dbu
         return np.rint(ll + np.array(self.region[:2], dtype=np.float64)).astype(np.int64)
 
-    def placed_pos(self):
-        """Cell centres (placer units) of the movable cells as placed in the DEF (bounding-box centre)."""
-        d, i = self.d, self.mov_index
+    def placed_pos(self, placed=None):
+        """Cell centres (placer units) of this design's movable cells as placed in a DEF (bounding-box centre).
+
+        `placed`: another parsed DEF of the same netlist (default: the design's own DEF). The movable set is always
+        this design's, whatever status the other DEF gives the components."""
+        d, i = placed or self.d, self.mov_index
+        if d.comp_name != self.d.comp_name:
+            raise ValueError("the placed DEF has other components than the design")
         if not d.comp_placed[i].all():
             raise ValueError("%d movable cells of the DEF have no location" % int((~d.comp_placed[i]).sum()))
         swap = np.array([d.comp_orient[k] in ("W", "E", "FW", "FE") for k in i], dtype=bool)

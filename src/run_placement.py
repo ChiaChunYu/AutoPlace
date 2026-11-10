@@ -34,14 +34,15 @@ def global_placement_main(data, wirelength, density, pos, node_size, args, logge
                                         total_area=float(node_size.prod(1).sum())), args, logger)
     objective = Objective(wirelength, density, ps)
     ps.set_init_param(*objective.raw_grads(pos))
-    lr = estimate_initial_learning_rate(pos, objective, args.lr)
+    bounds = (density.pos_lo, density.pos_hi)
+    lr = estimate_initial_learning_rate(pos, objective, args.lr, bounds)
     _sync(device)
     start = time.time()
-    optimizer = NesterovOptimizer(pos, objective, lr)
+    optimizer = NesterovOptimizer(pos, objective, lr, bounds, stats=lambda: (objective.hpwl, objective.overflow))
     reason, iteration, best = "max_iter", 0, None
     for iteration in range(args.inner_iter):
         optimizer.step()
-        hpwl, overflow = objective.hpwl.item(), objective.overflow.item()
+        hpwl, overflow = optimizer.fetched
         if iteration % args.log_freq == 0:
             logger.info("iter: %d | hpwl: %.4E overflow: %.4f density_weight: %.4E wa_coeff: %.4E"
                         % (iteration, hpwl, overflow, ps.density_weight, ps.wa_coeff))
@@ -77,8 +78,10 @@ def run_placement_main(args, logger):
     data = PlaceData(lef, design_def)
     parse_time = time.time() - total_start
     logger.info("design %s: #movable %d, #fixed %d, #nets %d, #pins %d, #rows %d, #blockages %d (parse %.2fs)"
-                % (data.name, data.num_mov, int(design_def.comp_fixed.sum()), data.num_nets, data.num_pins,
+                % (data.name, data.num_mov, int(data.fixed.sum()), data.num_nets, data.num_pins,
                    len(design_def.rows), len(design_def.blockages), parse_time))
+    if data.kept_in_place:
+        logger.info("%d placed components that are not core cells (pads, blocks, ...) are kept where they are" % data.kept_in_place)
     if design_def.soft_blockages:
         logger.info("warning: %d SOFT / PARTIAL placement blockages ignored" % design_def.soft_blockages)
     if data.unplaced_io_pins:
@@ -110,10 +113,7 @@ def run_placement_main(args, logger):
                "seed": args.seed, "device": str(device), "cuda_kernels": density_uses_kernel(device), "compiled_reader": bool(def_io), "parse_time_s": parse_time}
 
     if evaluate_only:
-        placed = PlaceData(lef, parse_def(args.eval_def))
-        if placed.d.comp_name != design_def.comp_name:
-            raise ValueError("--eval_def has other components than --def")
-        pos = tensor(placed.placed_pos(), torch.float32)
+        pos = tensor(data.placed_pos(parse_def(args.eval_def)), torch.float32)
     else:
         pos = init_positions(data, node_size, args, device)
         metrics.update(global_placement_main(data, wirelength, density, pos, node_size, args, logger))

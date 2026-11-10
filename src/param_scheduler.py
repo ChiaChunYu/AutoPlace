@@ -1,15 +1,13 @@
 """The parameters that change during global placement, and when to stop.
 
     density_weight  starts so that the density gradient is `--density_weight` of the wirelength gradient, then is
-                    multiplied every iteration by mu in [0.95, 1.05] x 1.05: faster while the wirelength still falls,
-                    slower when it rises quickly (ePlace)
+                    multiplied every iteration by about 1.05, less when the wirelength rises quickly (ePlace);
+                    every 3rd iteration only at the start and while wirelength and density are balanced
     wa_coeff        the smoothing gamma of the WA wirelength: large (smooth) at high overflow, small (close to HPWL)
                     at low overflow
     precond_coef    the preconditioner of a node is #pins + precond_coef x density_weight x area, at least 1 (the
                     diagonal the gradient is divided by); precond_coef doubles every 20 iterations once the overflow
                     is under 0.3
-This first layer follows the ePlace / DREAMPlace / Xplace schedule on purpose: it is the reference the adaptive
-rules of the later layers are measured against.
 """
 import math
 
@@ -43,11 +41,7 @@ class ParamScheduler(object):
         # slow the updates down (every 3rd iteration) at the start and while wirelength and density are balanced
         skip = (self.iter < 50 or 0.5 < self.weighted_weight < 0.95) and self.iter % 3 != 0
         if self.iter >= 1 and not skip:
-            delta = self.hpwl[-1] - self.hpwl[-2]
-            if delta < 0:
-                self.mu = 1.05 * max(0.9999 ** self.iter, 0.98)
-            else:
-                self.mu = 1.05 * float(np.clip(1.05 ** (-delta / self.args.ref_hpwl), 0.95, 1.05))
+            self.mu = self.growth()
             self.density_weight *= self.mu
             self.wa_coeff = self.base_gamma * 10 ** ((overflow - 0.1) * 20 / 9 - 1)
         if (self.iter > 15 and overflow > 0.9 and self.iter - self.last_enlarge > self.args.enlarge_interval
@@ -58,6 +52,13 @@ class ParamScheduler(object):
         if overflow < 0.3 and self.precond_coef < 1024 and self.iter % 20 == 0:
             self.precond_coef *= 2
         self.iter += 1
+
+    def growth(self):
+        """ePlace / Xplace: about 1.05 per iteration, less when the HPWL rose by a large part of --ref_hpwl."""
+        delta = self.hpwl[-1] - self.hpwl[-2]
+        if delta < 0:
+            return 1.05 * max(0.9999 ** self.iter, 0.98)
+        return 1.05 * float(np.clip(1.05 ** (-delta / self.args.ref_hpwl), 0.95, 1.05))
 
     @staticmethod
     def _plateau(x, window, threshold):

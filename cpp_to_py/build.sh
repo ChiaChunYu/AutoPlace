@@ -12,7 +12,7 @@ INC="$(q "' '.join('-I' + p for p in include_paths() + [sysconfig.get_paths()['i
 ABI="$(q "int(torch._C._GLIBCXX_USE_CXX11_ABI)")"; EXT="$(q "sysconfig.get_config_var('EXT_SUFFIX')")"
 ARCH="${CUDA_ARCH:-$(q "'%d%d' % torch.cuda.get_device_capability(0)")}"
 mkdir -p build
-"${NVCC}" -O3 -arch="sm_${ARCH}" -ccbin "${CXX}" -Xcompiler -fPIC -c gp_cuda_kernel.cu -o build/gp_cuda_kernel.o
+"${NVCC}" -O3 --use_fast_math -arch="sm_${ARCH}" -ccbin "${CXX}" -Xcompiler -fPIC -c gp_cuda_kernel.cu -o build/gp_cuda_kernel.o
 "${CXX}" -O3 -fPIC -std=c++17 -fvisibility=hidden -D_GLIBCXX_USE_CXX11_ABI="${ABI}" ${INC} -c gp_cuda.cpp -o build/gp_cuda.o
 LIB="$(q "torch.utils.cpp_extension.library_paths()[0]")"
 "${CXX}" -shared build/gp_cuda.o build/gp_cuda_kernel.o -L"${LIB}" -ltorch_python -ltorch -ltorch_cpu -ltorch_cuda -lc10 -lc10_cuda \

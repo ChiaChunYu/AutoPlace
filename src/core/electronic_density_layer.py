@@ -67,7 +67,6 @@ class ElectronicDensityLayer(object):
         kx[nbx, 0] = 0.0                                    # the Nyquist term has no derivative
         ky[0, nby] = 0.0
         self.to_field = torch.stack([-1j * kx * inv, -1j * ky * inv]).to(torch.complex64)      # [2, 2 nbx, nby + 1]
-        self.potential = inv.to(torch.complex64)
 
     def _nodes(self, size, ratio, t):
         nodes = {"size": t(size), "ratio": t(ratio)}
@@ -90,36 +89,35 @@ class ElectronicDensityLayer(object):
         iy = edges[:, 1].long().clamp_(max=self.nby - 1)
         return ix.unsqueeze(2) * self.nby + iy.unsqueeze(1), n["piece_ratio"] * ov[:, 0, :, None] * ov[:, 1, None, :]
 
-    def _maps(self, pos, n, num_mov):
-        """-> [2, nbx, nby]: density of the nodes below num_mov, and of the rest (fillers)."""
-        if self.use_kernel:
-            return gp_cuda.density_map(pos, n["size"], n["ratio"], num_mov, float(self.bin_np[0]), float(self.bin_np[1]),
-                                       self.nbx, self.nby)
-        idx, w = self._rasterize(pos, n)
-        idx = idx + (n["node"] >= num_mov).long().view(-1, 1, 1) * (self.nbx * self.nby)
-        maps = torch.zeros(2 * self.nbx * self.nby, device=self.device).index_add_(0, idx.reshape(-1), w.reshape(-1))
-        return maps.view(2, self.nbx, self.nby)
+    def _density(self, pos, n, num_mov):
+        """-> (total density mirrored in both axes for the FFT [2 nbx, 2 nby], overflow).
 
-    def overflow_of(self, mov_map):
-        return (mov_map - self.target).clamp_(min=0).sum() * (self.bin_area / self.mov_area)
+        Total = nodes below num_mov (cells) + blocked area + the rest (fillers); the overflow counts the first two."""
+        if self.use_kernel:
+            rho, over = gp_cuda.density_map(pos, n["size"], n["ratio"], num_mov, float(self.bin_np[0]), float(self.bin_np[1]),
+                                            self.nbx, self.nby, self.fixed_map, self.target)
+        else:
+            idx, w = self._rasterize(pos, n)
+            idx = idx + (n["node"] >= num_mov).long().view(-1, 1, 1) * (self.nbx * self.nby)
+            maps = torch.zeros(2 * self.nbx * self.nby, device=self.device).index_add_(0, idx.reshape(-1), w.reshape(-1))
+            mov = maps[:self.nbx * self.nby] + self.fixed_map.reshape(-1)
+            over = (mov - self.target).clamp_(min=0)
+            rho = (mov + maps[self.nbx * self.nby:])[self.mirror].view(2 * self.nbx, 2 * self.nby)
+        return rho, over.sum() * (self.bin_area / self.mov_area)
 
     def exact_overflow(self, pos):
         """Overflow of the movable cells with their real sizes (no smoothing, no fillers)."""
-        return self.overflow_of(self._maps(pos[:self.num_mov].contiguous(), self.real, self.num_mov)[0] + self.fixed_map)
+        return self._density(pos[:self.num_mov].contiguous(), self.real, self.num_mov)[1]
 
-    def forward(self, pos, wl_grad=None, weight=1.0, precond=-1.0, need_energy=False):
-        """pos [num_nodes, 2] -> (gradient [num_nodes, 2], overflow, energy or None).
+    def forward(self, pos, wl_grad=None, weight=1.0, precond=-1.0):
+        """pos [num_nodes, 2] -> (gradient [num_nodes, 2], overflow).
 
         gradient = (wl_grad + weight x gradient of the density energy) / max(1, pins + precond x area); with the
         defaults it is the plain density gradient (wl_grad [num_mov, 2] is added to the movable cells only).
         """
         n, size, bx, by = self.smooth, (2 * self.nbx, 2 * self.nby), float(self.bin_np[0]), float(self.bin_np[1])
-        maps = self._maps(pos, n, self.num_mov)
-        mov_map = maps[0] + self.fixed_map
-        overflow = self.overflow_of(mov_map)
-        rho = mov_map + maps[1]
-        spec = torch.fft.rfft2(rho.reshape(-1)[self.mirror].view(size))
-        field = torch.fft.irfft2(spec * self.to_field, s=size)                  # [2, 2 nbx, 2 nby], x and y
+        mirrored, overflow = self._density(pos, n, self.num_mov)
+        field = torch.fft.irfft2(torch.fft.rfft2(mirrored) * self.to_field, s=size)     # [2, 2 nbx, 2 nby], x and y
         wl_grad = self.no_grad if wl_grad is None else wl_grad
         if self.use_kernel:
             grad = gp_cuda.density_grad(pos, n["size"], n["ratio"], field, wl_grad, self.pins, self.area, weight, precond,
@@ -131,7 +129,4 @@ class ElectronicDensityLayer(object):
             grad[:len(wl_grad)] += wl_grad
             if precond >= 0:
                 grad /= (self.pins + precond * self.area).clamp_(min=1.0).unsqueeze(1)
-        energy = None
-        if need_energy:
-            energy = 0.5 * (torch.fft.irfft2(spec * self.potential, s=size)[:self.nbx, :self.nby] * rho).sum()
-        return grad, overflow, energy
+        return grad, overflow
