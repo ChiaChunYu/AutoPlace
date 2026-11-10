@@ -1,0 +1,135 @@
+"""The flow: read LEF + DEF -> build the problem -> global placement -> evaluate -> write DEF + metrics."""
+import json
+import os
+import time
+from types import SimpleNamespace
+
+import numpy as np
+import torch
+
+from cpp_to_py import def_io, gp_cuda
+from utils import parse_def, parse_lef, write_def
+from .calculator import Objective
+from .core import ElectronicDensityLayer, Wirelength
+from .database import PlaceData
+from .evaluator import evaluate_placement
+from .initializer import choose_num_bin, compute_fillers, init_positions
+from .nesterov_optimizer import NesterovOptimizer, estimate_initial_learning_rate
+from .param_scheduler import ParamScheduler
+
+
+def density_uses_kernel(device):
+    return bool(gp_cuda) and device.type == "cuda"
+
+
+def _sync(device):
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def global_placement_main(data, wirelength, density, pos, node_size, args, logger):
+    """Optimize `pos` in place. -> dict of GP statistics."""
+    device = pos.device
+    ps = ParamScheduler(SimpleNamespace(bin=density.bin_np, total_pins=float(data.cell_pins.sum()),
+                                        total_area=float(node_size.prod(1).sum())), args, logger)
+    objective = Objective(wirelength, density, ps)
+    ps.set_init_param(*objective.raw_grads(pos))
+    lr = estimate_initial_learning_rate(pos, objective, args.lr)
+    _sync(device)
+    start = time.time()
+    optimizer = NesterovOptimizer(pos, objective, lr)
+    reason, iteration, best = "max_iter", 0, None
+    for iteration in range(args.inner_iter):
+        optimizer.step()
+        hpwl, overflow = objective.hpwl.item(), objective.overflow.item()
+        if iteration % args.log_freq == 0:
+            logger.info("iter: %d | hpwl: %.4E overflow: %.4f density_weight: %.4E wa_coeff: %.4E"
+                        % (iteration, hpwl, overflow, ps.density_weight, ps.wa_coeff))
+        ps.step(hpwl, overflow)
+        stop = ps.need_to_stop()
+        if ps.is_best:
+            best = (pos.clone(), hpwl, overflow)
+        if stop:
+            reason = stop
+            break
+    if best:
+        pos.copy_(best[0])
+        hpwl, overflow = best[1:]
+    _sync(device)
+    gp_time = time.time() - start
+    iters = iteration + 1
+    logger.info("GP stop (%s): #iters %d hpwl: %.6E overflow: %.4f GP time: %.4fs per iter: %.6fs (%d gradient calls)"
+                % (reason, iters, hpwl, overflow, gp_time, gp_time / iters, objective.evals))
+    return {"stop_reason": reason, "iters": iters, "gp_time_s": gp_time, "per_iter_s": gp_time / iters,
+            "grad_calls": objective.evals, "backtracks": optimizer.backtracks}
+
+
+def run_placement_main(args, logger):
+    total_start = time.time()
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    device = torch.device("cuda:%d" % args.gpu if args.gpu >= 0 and torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.cuda.set_device(device)           # the kernels are launched on the current device
+
+    lef = parse_lef(args.lef)
+    design_def = parse_def(args.def_file)
+    data = PlaceData(lef, design_def)
+    parse_time = time.time() - total_start
+    logger.info("design %s: #movable %d, #fixed %d, #nets %d, #pins %d, #rows %d, #blockages %d (parse %.2fs)"
+                % (data.name, data.num_mov, int(design_def.comp_fixed.sum()), data.num_nets, data.num_pins,
+                   len(design_def.rows), len(design_def.blockages), parse_time))
+    if design_def.soft_blockages:
+        logger.info("warning: %d SOFT / PARTIAL placement blockages ignored" % design_def.soft_blockages)
+    if data.unplaced_io_pins:
+        logger.info("warning: %d connections to design pins without a location ignored" % data.unplaced_io_pins)
+
+    num_bin = choose_num_bin(data, args.num_bin)
+    fixed_fraction = data.fixed_fraction(num_bin, num_bin)
+    bin_area = data.width / num_bin * data.height / num_bin
+    evaluate_only = bool(args.eval_def)
+    if evaluate_only:
+        node_size = data.size
+    else:
+        node_size = np.concatenate([data.size, compute_fillers(data, fixed_fraction, bin_area, args, logger)])
+    logger.info("#bins %d x %d (bin %.3f x %.3f sites), target density %.3f, device %s"
+                % (num_bin, num_bin, data.width / num_bin, data.height / num_bin, args.target_density, device))
+    if device.type == "cuda" and not gp_cuda:
+        logger.info("warning: the CUDA kernels are not built (cpp_to_py/build.sh): PyTorch operators are used, "
+                    "several times slower and not reproducible bit for bit")
+    if not def_io:
+        logger.info("warning: the compiled DEF reader is not built (cpp_to_py/build.sh): the Python reader is used")
+    tensor = lambda a, dt: torch.tensor(a, dtype=dt, device=device)
+    wirelength = Wirelength(tensor(data.pin_cell, torch.long), tensor(data.pin_off, torch.float32),
+                            tensor(data.pin_net, torch.long), data.num_nets, data.num_mov, args.ignore_net_degree)
+    density = ElectronicDensityLayer(data.width, data.height, num_bin, num_bin, fixed_fraction, args.target_density,
+                                     node_size, data.num_mov, device,
+                                     np.concatenate([data.cell_pins, np.zeros(len(node_size) - data.num_mov)]))
+    metrics = {"design": data.name, "num_movable": data.num_mov, "num_nets": data.num_nets, "num_pins": data.num_pins,
+               "num_fillers": len(node_size) - data.num_mov, "num_bin": num_bin, "target_density": args.target_density,
+               "seed": args.seed, "device": str(device), "cuda_kernels": density_uses_kernel(device), "compiled_reader": bool(def_io), "parse_time_s": parse_time}
+
+    if evaluate_only:
+        placed = PlaceData(lef, parse_def(args.eval_def))
+        if placed.d.comp_name != design_def.comp_name:
+            raise ValueError("--eval_def has other components than --def")
+        pos = tensor(placed.placed_pos(), torch.float32)
+    else:
+        pos = init_positions(data, node_size, args, device)
+        metrics.update(global_placement_main(data, wirelength, density, pos, node_size, args, logger))
+    metrics.update(evaluate_placement(pos, wirelength, density, data))
+    logger.info("exact HPWL: %.6E sites = %.1f um, exact overflow: %.4f"
+                % (metrics["hpwl_sites"], metrics["hpwl_um"], metrics["overflow"]))
+
+    if args.out_dir:
+        os.makedirs(args.out_dir, exist_ok=True)
+        if not evaluate_only and args.write_def:
+            start = time.time()
+            write_def(design_def, os.path.join(args.out_dir, "gp.def"), data.mov_index,
+                      data.to_def_xy(pos[:data.num_mov].cpu().numpy()))
+            metrics["write_time_s"] = time.time() - start
+        metrics["total_time_s"] = time.time() - total_start
+        with open(os.path.join(args.out_dir, "metrics.json"), "w") as f:
+            json.dump(metrics, f, indent=2)
+    logger.info("total time: %.2fs" % (time.time() - total_start))
+    return metrics
