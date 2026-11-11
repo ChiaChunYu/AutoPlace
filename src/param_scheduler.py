@@ -4,8 +4,8 @@
                     (`--start_tol`); then set so that the density force on the cells is `--density_weight` of the
                     full wire tension (every pin pulling), and from there multiplied every iteration by at most
                     1.05: less the further the nodes moved in the last iteration, counted in cell pitches
-                    (`--ref_motion`), and less when the HPWL fell (the wirelength is still catching up); every 3rd
-                    iteration only while wirelength and density are balanced
+                    (`--ref_motion`), and less when the HPWL fell (the wirelength is still catching up); updated
+                    every iteration (the motion is what slows it down, no fixed slow window)
     wa_coeff        the smoothing gamma of the WA wirelength: large (smooth) at high overflow, small (close to HPWL)
                     at low overflow
     precond_coef    the preconditioner of a node is #pins + precond_coef x density_weight x area, at least 1 (the
@@ -56,11 +56,9 @@ class ParamScheduler(object):
         self.weighted_weight = density_part / (self.total_pins + density_part)
         self.hpwl.append(hpwl)
         self.overflow.append(overflow)
-        # slow the updates down (every 3rd iteration) while wirelength and density are balanced
-        if not (0.5 < self.weighted_weight < 0.95 and self.iter % 3 != 0):
-            self.mu = self.growth()
-            self.density_weight *= self.mu
-            self.wa_coeff = self.gamma(overflow)
+        self.mu = self.growth()
+        self.density_weight *= self.mu
+        self.wa_coeff = self.gamma(overflow)
         if (self.iter > 15 and overflow > 0.9 and self.iter - self.last_enlarge > self.args.enlarge_interval
                 and self._plateau(self.overflow, 25, 0.001)):
             self.last_enlarge = self.iter      # the cells have not started to spread: the density weight is too small
