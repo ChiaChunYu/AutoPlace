@@ -94,6 +94,7 @@ def global_placement_main(data, wirelength, density, pos, node_size, fixed_fract
                     % (level.iters, level.reason, level.hpwl, level.overflow, weight))
         evals, backtracks, first_iter, start_iters = cobjective.evals, level.backtracks, level.iters, level.start_iters
         stats["coarse_iters"] = level.iters
+        del coarse, cobjective, cps, cpos              # the cluster problem is not needed any more: free its memory
     level = _place_level(pos, objective, ps, args, logger, first_iter)
     _sync(device)
     gp_time, iters = time.time() - start, level.iters
