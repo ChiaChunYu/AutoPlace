@@ -21,6 +21,7 @@ class NesterovOptimizer(object):
         self.lo, self.hi = bounds
         self.max_backtrack = max_backtrack
         self.kernel = bool(gp_cuda) and pos.is_cuda
+        self._scalars = pos.new_empty(2) if self.kernel else None      # alpha, coef for the kernel
         self.v = pos.clamp_(min=self.lo, max=self.hi)
         self.g = grad_fn(self.v)
         self.u = self.v.clone()
@@ -28,19 +29,24 @@ class NesterovOptimizer(object):
         self.alpha = (torch.dist(self.v, probe) / torch.dist(self.g, grad_fn(probe))).item()
         self.a = 1.0
         self.backtracks, self.moved = 0, 0.0    # moved: L2 norm of the last move of the look-ahead point
+        self.diverged = False                   # a step gave a value that is not finite (it was not taken)
 
     def step(self):
         a_next = (1 + math.sqrt(4 * self.a * self.a + 1)) / 2
         coef = (self.a - 1) / a_next
         for k in range(self.max_backtrack):
             if self.kernel:             # one pass: u_next = v - alpha g, v_next = u_next + coef (u_next - u), clamped
-                u_next, v_next = gp_cuda.nesterov_step(self.u, self.v, self.g, self.lo, self.hi, self.alpha, coef)
+                u_next, v_next = gp_cuda.nesterov_step(self.u, self.v, self.g, self.lo, self.hi,
+                                                       self._scalars[0:1].fill_(self.alpha), self._scalars[1:2].fill_(coef))
             else:
                 u_next = torch.add(self.v, self.g, alpha=-self.alpha)
                 v_next = torch.lerp(self.u, u_next, 1 + coef).clamp_(min=self.lo, max=self.hi)
             g_next = self.grad_fn(v_next)
             moved, turned, *self.fetched = torch.stack((torch.dist(v_next, self.v), torch.dist(g_next, self.g)) + tuple(self.stats())).tolist()
-            alpha_next, self.moved = moved / turned, moved
+            if not all(map(math.isfinite, [moved, turned] + self.fetched[:1])):
+                self.diverged = True            # not taken: the placement stays at the last finite point
+                return
+            alpha_next, self.moved = (moved / turned if turned > 0 else self.alpha), moved
             if alpha_next > 0.95 * self.alpha:
                 break
             self.alpha = alpha_next

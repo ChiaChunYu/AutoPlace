@@ -10,6 +10,7 @@ import torch
 
 from cpp_to_py import def_io, gp_cuda
 from utils import parse_def, parse_lef, write_def
+from . import gpu_loop
 from .calculator import Objective
 from .cluster import coarse_problem, expand
 from .core import ElectronicDensityLayer, Wirelength
@@ -41,8 +42,16 @@ def _place_level(pos, objective, ps, args, logger, first_iter=0):
     lr = estimate_initial_learning_rate(pos, objective, args.lr, bounds)
     optimizer = NesterovOptimizer(pos, objective, lr, bounds, stats=lambda: (objective.hpwl, objective.overflow, objective.wa))
     reason, iteration, best, start_iters = "max_iter", first_iter, None, 0
+    hpwl = overflow = float("nan")
     for iteration in range(first_iter, args.inner_iter):
+        if ps.density_weight > 0 and gpu_loop.usable(optimizer):     # the rest of the level: control on the GPU
+            reason, iters, hpwl, overflow = gpu_loop.run_level_on_gpu(optimizer, objective, ps, args, logger, iteration)
+            return SimpleNamespace(reason=reason, iters=iters, start_iters=start_iters, hpwl=hpwl, overflow=overflow,
+                                   backtracks=optimizer.backtracks)
         optimizer.step()
+        if optimizer.diverged:
+            reason = "diverged"
+            break
         hpwl, overflow, wa = optimizer.fetched
         if iteration % args.log_freq == 0:
             logger.info("iter: %d | hpwl: %.4E overflow: %.4f density_weight: %.4E wa_coeff: %.4E"
@@ -110,6 +119,8 @@ def run_placement_main(args, logger):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device("cuda:%d" % args.gpu if args.gpu >= 0 and torch.cuda.is_available() else "cpu")
+    if args.gpu >= 0 and device.type != "cuda":
+        logger.info("warning: --gpu %d asked for, but no CUDA device is available: the CPU is used" % args.gpu)
     if device.type == "cuda":
         torch.cuda.set_device(device)           # the kernels are launched on the current device
 
@@ -157,6 +168,11 @@ def run_placement_main(args, logger):
     else:
         pos = init_positions(data, node_size, args, device)
         metrics.update(global_placement_main(data, wirelength, density, pos, node_size, fixed_fraction, args, logger))
+        if metrics["stop_reason"] != "converged":
+            logger.info("warning: global placement ended '%s', not converged (--stop_overflow %.3f)"
+                        % (metrics["stop_reason"], args.stop_overflow))
+        if not bool(torch.isfinite(pos[:data.num_mov]).all()):
+            raise RuntimeError("the placement is not finite (diverged before any usable point): nothing written")
     metrics.update(evaluate_placement(pos, wirelength, density, data))
     logger.info("exact HPWL: %.6E sites = %.1f um, exact overflow: %.4f"
                 % (metrics["hpwl_sites"], metrics["hpwl_um"], metrics["overflow"]))

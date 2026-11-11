@@ -40,9 +40,7 @@ def get_option(argv=None):
     p.add_argument("--ref_motion", type=float, default=5.0, help="move per iteration (RMS, in cell pitches) at which the density weight stops growing")
     p.add_argument("--cluster_ratio", type=float, default=5, help="clusters of this many cells are placed first, then the cells (two levels); 1 = cells only")
     p.add_argument("--handover_overflow", type=float, default=0.7, help="overflow of the clusters at which the cells take over")
-    p.add_argument("--enlarge_interval", type=int, default=1000, help="min iterations between density weight doublings")
     p.add_argument("--lr", type=float, default=0.01, help="length of the probe step that sets the first step size")
-    p.add_argument("--noise_ratio", type=float, default=0.025, help="start position noise, in cell sizes")
     p.add_argument("--log_freq", type=int, default=100)
     return p.parse_args(argv)
 

@@ -20,6 +20,8 @@ def compute_fillers(data, fixed_fraction, bin_area, args, logger):
     """
     placeable = float((1.0 - fixed_fraction).sum() * bin_area)
     util = data.mov_area / placeable
+    if util > 1:
+        raise ValueError("the movable cells need %.3f x the free area of the region: they do not fit" % util)
     logger.info("region %.1f x %.1f sites, placeable area %.4E, movable area %.4E, utilization %.3f"
                 % (data.width, data.height, placeable, data.mov_area, util))
     if util > args.target_density:
@@ -42,6 +44,4 @@ def init_positions(data, node_size, args, device):
     num_fill = len(node_size) - data.num_mov
     pos = torch.cat([torch.randn(data.num_mov, 2, generator=gen) * region * 0.001 + region * 0.5,
                      torch.rand(num_fill, 2, generator=gen) * region], 0)
-    size = torch.tensor(node_size, dtype=torch.float32)
-    pos += (torch.rand(len(node_size), 2, generator=gen) - 0.5) * size * args.noise_ratio
     return pos.to(device)

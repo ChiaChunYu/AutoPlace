@@ -54,6 +54,7 @@ class ElectronicDensityLayer(object):
         self.pins = t(np.zeros(len(real)) if node_pins is None else node_pins)
         self.area = t(real.prod(1))
         self.no_grad = torch.zeros(0, 2, device=device)
+        self._scalars = torch.empty(2, device=device)      # weight, precond for the kernel, when given as floats
         mx, my = (np.minimum(np.arange(2 * n), 2 * n - 1 - np.arange(2 * n)) for n in (nbx, nby))
         self.mirror = t((mx[:, None] * nby + my[None, :]).reshape(-1), torch.long)     # map -> mirrored map
 
@@ -110,12 +111,17 @@ class ElectronicDensityLayer(object):
 
         gradient = (wl_grad + weight x gradient of the density energy) / max(1, pins + precond x area); with the
         defaults it is the plain density gradient (wl_grad [num_mov, 2] is added to the movable cells only).
+        weight / precond: floats, or 1-element tensors on the device (read there by the kernel).
         """
         n, size, bx, by = self.smooth, (2 * self.nbx, 2 * self.nby), float(self.bin_np[0]), float(self.bin_np[1])
         mirrored, overflow = self._density(pos, n, self.num_mov)
         field = torch.fft.irfft2(torch.fft.rfft2(mirrored) * self.to_field, s=size)     # [2, 2 nbx, 2 nby], x and y
         wl_grad = self.no_grad if wl_grad is None else wl_grad
         if self.use_kernel:
+            if not torch.is_tensor(weight):
+                weight = self._scalars[0:1].fill_(weight)
+            if not torch.is_tensor(precond):
+                precond = self._scalars[1:2].fill_(precond)
             grad = gp_cuda.density_grad(pos, n["size"], n["ratio"], field, wl_grad, self.pins, self.area, weight, precond,
                                         bx, by, self.nbx, self.nby)
         else:                                                                   # -(charge x field), summed per node

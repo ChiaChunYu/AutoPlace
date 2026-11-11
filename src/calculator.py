@@ -34,3 +34,11 @@ class Objective(object):
                                                        self.ps.precond_coef * self.ps.density_weight)
         self.evals += 1
         return grad
+
+    def on_gpu(self, pos, kp):
+        """The same gradient with the parameters in device memory: kp = (wa smoothing, density weight,
+        density weight x precond_coef, ...) as set by the control kernel (src/gpu_loop.py)."""
+        self.wa, wl_grad, self.hpwl = self.wirelength.forward(pos, kp[0:1])
+        grad, self.overflow = self.density.forward(pos, wl_grad, kp[1:2], kp[2:3])
+        self.evals += 1
+        return grad

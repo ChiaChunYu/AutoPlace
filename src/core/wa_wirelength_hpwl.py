@@ -22,6 +22,7 @@ class Wirelength(object):
         kernel's view (pins grouped by net and by cell, int32)."""
         self.num_mov = num_mov
         self.kernel = bool(gp_cuda) and pin_off.is_cuda
+        self._gamma = pin_off.new_empty(1) if self.kernel else None      # gamma for the kernel, when given as a float
         degree = torch.bincount(pin_net.cpu(), minlength=num_nets).to(pin_net.device)
         # the optimized nets: 2 <= degree <= ignore_net_degree (a huge net, e.g. reset, only adds noise to the gradient)
         use = (degree >= 2) & (degree <= ignore_net_degree)
@@ -69,11 +70,14 @@ class Wirelength(object):
         return (hi - lo).sum()
 
     def forward(self, pos, gamma):
-        """-> (WA wirelength, its gradient [num_mov, 2], HPWL of the optimized nets)."""
+        """gamma: a float, or a 1-element tensor on the device (the kernel reads it there: no transfer).
+        -> (WA wirelength, its gradient [num_mov, 2], HPWL of the optimized nets)."""
         s = self.opt
         if self.kernel:
+            if not torch.is_tensor(gamma):
+                gamma = self._gamma.fill_(gamma)
             grad, out = gp_cuda.wa(pos, s["cell32"], s["off"], s["net_start"], s["cell_start"], s["cell_pin"],
-                                   self.num_mov, float(gamma))
+                                   self.num_mov, gamma)
             total = out.sum(0)
             return total[0], grad, total[1]
         x = self._pin_pos(pos, s)

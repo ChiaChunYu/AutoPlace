@@ -29,7 +29,6 @@ class ParamScheduler(object):
         self.motion = 0.0                       # RMS move of the nodes in the last iteration, in cell pitches
         self.weighted_weight = 0.0              # share of the density term in the preconditioner, 0..1
         self.mu = 1.0
-        self.last_enlarge = -args.enlarge_interval
         self.settled, self.best_hpwl, self.best_overflow, self.is_best, self.improved_iter = 0, float("inf"), float("inf"), False, 0
 
     def start_step(self, hpwl, wa, window=5):
@@ -59,11 +58,6 @@ class ParamScheduler(object):
         self.mu = self.growth()
         self.density_weight *= self.mu
         self.wa_coeff = self.gamma(overflow)
-        if (self.iter > 15 and overflow > 0.9 and self.iter - self.last_enlarge > self.args.enlarge_interval
-                and self._plateau(self.overflow, 25, 0.001)):
-            self.last_enlarge = self.iter      # the cells have not started to spread: the density weight is too small
-            self.density_weight *= 2
-            self.logger.info("overflow plateau at iter %d: density weight doubled" % self.iter)
         if overflow < 0.3 and self.precond_coef < 1024 and self.iter % 20 == 0:
             self.precond_coef *= 2
         self.iter += 1
@@ -75,13 +69,6 @@ class ParamScheduler(object):
         if self.hpwl[-1] < self.hpwl[-2]:
             return 1.05 * 0.98
         return 1.05 * max(1.05 ** (-self.motion / self.args.ref_motion), 0.95)
-
-    @staticmethod
-    def _plateau(x, window, threshold):
-        if len(x) < window:
-            return False
-        x = x[-window:]
-        return (max(x) - min(x)) / (sum(x) / len(x)) < threshold
 
     def need_to_stop(self):
         """-> reason to stop, or None; sets `is_best` when the caller should keep the current placement.
