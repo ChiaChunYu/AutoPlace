@@ -75,10 +75,6 @@ class ElectronicDensityLayer(object):
             nodes.update(node=t(node, torch.long), off=t(off), half=t(half), piece_ratio=t(ratio[node]).view(-1, 1, 1))
         return nodes
 
-    def clamp_(self, pos):
-        """Keep every (smoothed) node inside the placement region, in place."""
-        return pos.clamp_(min=self.pos_lo, max=self.pos_hi)
-
     def _rasterize(self, pos, n):
         """-> (flat bin index [Q, 3, 3], weight [Q, 3, 3] = density a piece adds to each bin)."""
         c = pos[n["node"]] + n["off"]

@@ -27,7 +27,7 @@ class NesterovOptimizer(object):
         probe = torch.add(self.v, self.g, alpha=-lr).clamp_(min=self.lo, max=self.hi)
         self.alpha = (torch.dist(self.v, probe) / torch.dist(self.g, grad_fn(probe))).item()
         self.a = 1.0
-        self.backtracks = 0
+        self.backtracks, self.moved = 0, 0.0    # moved: L2 norm of the last move of the look-ahead point
 
     def step(self):
         a_next = (1 + math.sqrt(4 * self.a * self.a + 1)) / 2
@@ -40,7 +40,7 @@ class NesterovOptimizer(object):
                 v_next = torch.lerp(self.u, u_next, 1 + coef).clamp_(min=self.lo, max=self.hi)
             g_next = self.grad_fn(v_next)
             moved, turned, *self.fetched = torch.stack((torch.dist(v_next, self.v), torch.dist(g_next, self.g)) + tuple(self.stats())).tolist()
-            alpha_next = moved / turned
+            alpha_next, self.moved = moved / turned, moved
             if alpha_next > 0.95 * self.alpha:
                 break
             self.alpha = alpha_next

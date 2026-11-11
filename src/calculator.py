@@ -3,24 +3,34 @@ divided per node by the preconditioner max(1, #pins + precond_coef x density_wei
 
 The value of the objective is not needed by the optimizer, so it is never computed; the HPWL and the overflow of the
 evaluated point come for free from the same pass.
+
+While the density weight is 0 (the wirelength-only start) the density map and the field are not computed at all.
 """
+import torch
 
 
 class Objective(object):
     def __init__(self, wirelength, density, ps):
         self.wirelength, self.density, self.ps = wirelength, density, ps
-        self.hpwl = self.overflow = None        # of the last evaluated point (HPWL: the optimized nets)
+        self.wa = self.hpwl = self.overflow = None      # of the last evaluated point (WA, HPWL: the optimized nets)
         self.evals = 0
+        self.not_measured = torch.tensor(float("nan"), device=density.device)
+        self.pin_precond = density.pins[:density.num_mov].clamp(min=1.0).unsqueeze(1)
 
-    def raw_grads(self, pos):
-        """-> (wirelength gradient [num_mov, 2], density gradient [num_nodes, 2]), unweighted; pos is clamped in place."""
-        self.density.clamp_(pos)
-        return self.wirelength.forward(pos, self.ps.wa_coeff)[1], self.density.forward(pos)[0]
+    def tension_unit(self, pos):
+        """The density weight at which the density force on the cells equals every pin pulling at full tension:
+        #pins / L1 norm of the density gradient. The start of the density weight is given in this unit."""
+        n = self.density.num_mov
+        return (self.density.pins.sum() / self.density.forward(pos)[0][:n].abs().sum()).item()
 
     def __call__(self, pos):
         """pos must be inside the region (the optimizer keeps it there: `density.pos_lo`, `density.pos_hi`)."""
-        _, wl_grad, self.hpwl = self.wirelength.forward(pos, self.ps.wa_coeff)
-        grad, self.overflow = self.density.forward(pos, wl_grad, self.ps.density_weight,
-                                                      self.ps.precond_coef * self.ps.density_weight)
+        self.wa, wl_grad, self.hpwl = self.wirelength.forward(pos, self.ps.wa_coeff)
+        if self.ps.density_weight == 0:
+            grad, self.overflow = torch.zeros_like(pos), self.not_measured
+            grad[:len(wl_grad)] = wl_grad / self.pin_precond
+        else:
+            grad, self.overflow = self.density.forward(pos, wl_grad, self.ps.density_weight,
+                                                       self.ps.precond_coef * self.ps.density_weight)
         self.evals += 1
         return grad

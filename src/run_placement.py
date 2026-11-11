@@ -1,5 +1,6 @@
 """The flow: read LEF + DEF -> build the problem -> global placement -> evaluate -> write DEF + metrics."""
 import json
+import math
 import os
 import time
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import torch
 from cpp_to_py import def_io, gp_cuda
 from utils import parse_def, parse_lef, write_def
 from .calculator import Objective
+from .cluster import coarse_problem, expand
 from .core import ElectronicDensityLayer, Wirelength
 from .database import PlaceData
 from .evaluator import evaluate_placement
@@ -27,26 +29,31 @@ def _sync(device):
         torch.cuda.synchronize(device)
 
 
-def global_placement_main(data, wirelength, density, pos, node_size, args, logger):
-    """Optimize `pos` in place. -> dict of GP statistics."""
-    device = pos.device
-    ps = ParamScheduler(SimpleNamespace(bin=density.bin_np, total_pins=float(data.cell_pins.sum()),
-                                        total_area=float(node_size.prod(1).sum())), args, logger)
-    objective = Objective(wirelength, density, ps)
-    ps.set_init_param(*objective.raw_grads(pos))
-    bounds = (density.pos_lo, density.pos_hi)
+def _scheduler(density, num_mov, mov_area, total_pins, total_area, num_nodes, args, logger):
+    # pitch: the spacing of the cells once they are spread at the target density
+    return ParamScheduler(SimpleNamespace(bin=density.bin_np, total_pins=total_pins, total_area=total_area, num_nodes=num_nodes,
+                                          pitch=math.sqrt(mov_area / density.target / num_mov)), args, logger)
+
+
+def _place_level(pos, objective, ps, args, logger, first_iter=0):
+    """One level of global placement: optimizes `pos` in place until ps.need_to_stop(). -> statistics."""
+    bounds = (objective.density.pos_lo, objective.density.pos_hi)
     lr = estimate_initial_learning_rate(pos, objective, args.lr, bounds)
-    _sync(device)
-    start = time.time()
-    optimizer = NesterovOptimizer(pos, objective, lr, bounds, stats=lambda: (objective.hpwl, objective.overflow))
-    reason, iteration, best = "max_iter", 0, None
-    for iteration in range(args.inner_iter):
+    optimizer = NesterovOptimizer(pos, objective, lr, bounds, stats=lambda: (objective.hpwl, objective.overflow, objective.wa))
+    reason, iteration, best, start_iters = "max_iter", first_iter, None, 0
+    for iteration in range(first_iter, args.inner_iter):
         optimizer.step()
-        hpwl, overflow = optimizer.fetched
+        hpwl, overflow, wa = optimizer.fetched
         if iteration % args.log_freq == 0:
             logger.info("iter: %d | hpwl: %.4E overflow: %.4f density_weight: %.4E wa_coeff: %.4E"
                         % (iteration, hpwl, overflow, ps.density_weight, ps.wa_coeff))
-        ps.step(hpwl, overflow)
+        if ps.density_weight == 0:              # wirelength-only start
+            if ps.start_step(hpwl, wa):
+                ps.density_weight, start_iters = args.density_weight * objective.tension_unit(pos), iteration + 1
+                logger.info("wirelength-only start over after %d iterations (hpwl %.4E): density weight %.4E"
+                            % (start_iters, hpwl, ps.density_weight))
+            continue
+        ps.step(hpwl, overflow, optimizer.moved)
         stop = ps.need_to_stop()
         if ps.is_best:
             best = (pos.clone(), hpwl, overflow)
@@ -56,13 +63,45 @@ def global_placement_main(data, wirelength, density, pos, node_size, args, logge
     if best:
         pos.copy_(best[0])
         hpwl, overflow = best[1:]
+    return SimpleNamespace(reason=reason, iters=iteration + 1, start_iters=start_iters, hpwl=hpwl, overflow=overflow,
+                           backtracks=optimizer.backtracks)
+
+
+def global_placement_main(data, wirelength, density, pos, node_size, fixed_fraction, args, logger):
+    """Optimize `pos` in place. -> dict of GP statistics."""
+    device, n = pos.device, data.num_mov
     _sync(device)
-    gp_time = time.time() - start
-    iters = iteration + 1
+    start = time.time()
+    ps = _scheduler(density, n, data.mov_area, float(data.cell_pins.sum()), float(node_size.prod(1).sum()), len(node_size), args, logger)
+    objective = Objective(wirelength, density, ps)
+    stats, evals, backtracks, first_iter, start_iters = {}, 0, 0, 0, 0
+    if args.cluster_ratio > 1:                                  # two levels: the clusters first
+        coarse = coarse_problem(data, node_size, wirelength, density, fixed_fraction, args)
+        _sync(device)
+        stats = {"clusters": coarse.num, "cluster_time_s": time.time() - start}
+        logger.info("two levels: %d clusters of %d cells (%.2fs)" % (coarse.num, n, stats["cluster_time_s"]))
+        cargs = SimpleNamespace(**vars(args))
+        cargs.stop_overflow, cargs.settle_iter, cargs.min_iter = args.handover_overflow, 0, 0
+        cps = _scheduler(coarse.density, coarse.num, data.mov_area, coarse.total_pins, coarse.total_area, coarse.num_nodes, cargs, logger)
+        cobjective = Objective(coarse.wirelength, coarse.density, cps)
+        cpos = torch.cat([pos[:coarse.num], pos[n:]])
+        level = _place_level(cpos, cobjective, cps, cargs, logger)
+        pos.copy_(expand(cpos, coarse, node_size, args.seed)).clamp_(min=density.pos_lo, max=density.pos_hi)
+        # the same share of the wire tension on both levels
+        weight = cps.density_weight * objective.tension_unit(pos) / cobjective.tension_unit(cpos)
+        ps.resume(cps, weight, wirelength.forward(pos, ps.wa_coeff)[2].item(), density.forward(pos)[1].item())
+        logger.info("clusters placed after %d iterations (stop: %s, hpwl %.4E, overflow %.4f): the cells take over, density weight %.4E"
+                    % (level.iters, level.reason, level.hpwl, level.overflow, weight))
+        evals, backtracks, first_iter, start_iters = cobjective.evals, level.backtracks, level.iters, level.start_iters
+        stats["coarse_iters"] = level.iters
+    level = _place_level(pos, objective, ps, args, logger, first_iter)
+    _sync(device)
+    gp_time, iters = time.time() - start, level.iters
     logger.info("GP stop (%s): #iters %d hpwl: %.6E overflow: %.4f GP time: %.4fs per iter: %.6fs (%d gradient calls)"
-                % (reason, iters, hpwl, overflow, gp_time, gp_time / iters, objective.evals))
-    return {"stop_reason": reason, "iters": iters, "gp_time_s": gp_time, "per_iter_s": gp_time / iters,
-            "grad_calls": objective.evals, "backtracks": optimizer.backtracks}
+                % (level.reason, iters, level.hpwl, level.overflow, gp_time, gp_time / iters, evals + objective.evals))
+    stats.update({"stop_reason": level.reason, "iters": iters, "start_iters": start_iters or level.start_iters, "gp_time_s": gp_time,
+                  "per_iter_s": gp_time / iters, "grad_calls": evals + objective.evals, "backtracks": backtracks + level.backtracks})
+    return stats
 
 
 def run_placement_main(args, logger):
@@ -116,7 +155,7 @@ def run_placement_main(args, logger):
         pos = tensor(data.placed_pos(parse_def(args.eval_def)), torch.float32)
     else:
         pos = init_positions(data, node_size, args, device)
-        metrics.update(global_placement_main(data, wirelength, density, pos, node_size, args, logger))
+        metrics.update(global_placement_main(data, wirelength, density, pos, node_size, fixed_fraction, args, logger))
     metrics.update(evaluate_placement(pos, wirelength, density, data))
     logger.info("exact HPWL: %.6E sites = %.1f um, exact overflow: %.4f"
                 % (metrics["hpwl_sites"], metrics["hpwl_um"], metrics["overflow"]))
