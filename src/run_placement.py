@@ -16,7 +16,7 @@ from .cluster import coarse_problem, expand
 from .core import ElectronicDensityLayer, Wirelength
 from .database import PlaceData
 from .evaluator import evaluate_placement
-from .initializer import choose_num_bin, compute_fillers, init_positions
+from .initializer import choose_num_bin, compute_fillers, force_num_bin, init_positions
 from .nesterov_optimizer import NesterovOptimizer, estimate_initial_learning_rate
 from .param_scheduler import ParamScheduler
 
@@ -87,8 +87,9 @@ def global_placement_main(data, wirelength, density, pos, node_size, fixed_fract
     if args.cluster_ratio > 1:                                  # two levels: the clusters first
         coarse = coarse_problem(data, node_size, wirelength, density, fixed_fraction, args)
         _sync(device)
-        stats = {"clusters": coarse.num, "cluster_time_s": time.time() - start}
-        logger.info("two levels: %d clusters of %d cells (%.2fs)" % (coarse.num, n, stats["cluster_time_s"]))
+        stats = {"clusters": coarse.num, "cluster_time_s": time.time() - start, "coarse_num_bin": coarse.density.nbx}
+        logger.info("two levels: %d clusters of %d cells (%.2fs), %d x %d bins"
+                    % (coarse.num, n, stats["cluster_time_s"], coarse.density.nbx, coarse.density.nby))
         cargs = SimpleNamespace(**vars(args))
         cargs.stop_overflow, cargs.settle_iter, cargs.min_iter = args.handover_overflow, 0, 0
         cps = _scheduler(coarse.density, coarse.num, data.mov_area, coarse.total_pins, coarse.total_area, coarse.num_nodes, cargs, logger)
@@ -138,16 +139,18 @@ def run_placement_main(args, logger):
     if data.unplaced_io_pins:
         logger.info("warning: %d connections to design pins without a location ignored" % data.unplaced_io_pins)
 
-    num_bin = choose_num_bin(data, args.num_bin)
-    fixed_fraction = data.fixed_fraction(num_bin, num_bin)
-    bin_area = data.width / num_bin * data.height / num_bin
+    num_bin = choose_num_bin(data, args.num_bin)                # the grid of the overflow
     evaluate_only = bool(args.eval_def)
+    free = 1.0 - float(data.fixed_fraction(num_bin, num_bin).mean())
+    force_bin = num_bin if evaluate_only else (args.force_num_bin or force_num_bin(data.num_mov, free, num_bin))
+    fixed_fraction = data.fixed_fraction(force_bin, force_bin)
+    bin_area = data.width / force_bin * data.height / force_bin
     if evaluate_only:
         node_size = data.size
     else:
         node_size = np.concatenate([data.size, compute_fillers(data, fixed_fraction, bin_area, args, logger)])
-    logger.info("#bins %d x %d (bin %.3f x %.3f sites), target density %.3f, device %s"
-                % (num_bin, num_bin, data.width / num_bin, data.height / num_bin, args.target_density, device))
+    logger.info("#bins %d x %d (bin %.3f x %.3f sites), force on %d x %d bins, target density %.3f, device %s"
+                % (num_bin, num_bin, data.width / num_bin, data.height / num_bin, force_bin, force_bin, args.target_density, device))
     if device.type == "cuda" and not gp_cuda:
         logger.info("warning: the CUDA kernels are not built (cpp_to_py/build.sh): PyTorch operators are used, "
                     "several times slower and not reproducible bit for bit")
@@ -156,11 +159,14 @@ def run_placement_main(args, logger):
     tensor = lambda a, dt: torch.tensor(a, dtype=dt, device=device)
     wirelength = Wirelength(tensor(data.pin_cell, torch.long), tensor(data.pin_off, torch.float32),
                             tensor(data.pin_net, torch.long), data.num_nets, data.num_mov, args.ignore_net_degree)
-    density = ElectronicDensityLayer(data.width, data.height, num_bin, num_bin, fixed_fraction, args.target_density,
+    density = ElectronicDensityLayer(data.width, data.height, force_bin, force_bin, fixed_fraction, args.target_density,
                                      node_size, data.num_mov, device,
                                      np.concatenate([data.cell_pins, np.zeros(len(node_size) - data.num_mov)]))
+    if force_bin != num_bin:
+        density.judge = ElectronicDensityLayer(data.width, data.height, num_bin, num_bin, data.fixed_fraction(num_bin, num_bin),
+                                               args.target_density, data.size, data.num_mov, device, field=False)
     metrics = {"design": data.name, "num_movable": data.num_mov, "num_nets": data.num_nets, "num_pins": data.num_pins,
-               "num_fillers": len(node_size) - data.num_mov, "num_bin": num_bin, "target_density": args.target_density,
+               "num_fillers": len(node_size) - data.num_mov, "num_bin": num_bin, "force_num_bin": force_bin, "target_density": args.target_density,
                "seed": args.seed, "device": str(device), "cuda_kernels": density_uses_kernel(device), "compiled_reader": bool(def_io), "parse_time_s": parse_time}
 
     if evaluate_only:

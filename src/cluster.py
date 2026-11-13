@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from .core import ElectronicDensityLayer, Wirelength
+from .initializer import force_num_bin
 
 
 def _merge_edges(parts, n):
@@ -88,7 +89,9 @@ def coarse_problem(data, node_size, wirelength, density, fixed_fraction, args):
     """-> the problem of the clusters: cid [num_mov], size [K, 2], wirelength, density, and what ParamScheduler needs.
 
     A merged cluster is a square of the summed cell area with its pins at the centre, one per net; a cell that was
-    not merged keeps its shape and pin offsets. Fillers, grid and blockages are those of the cell-level problem."""
+    not merged keeps its shape and pin offsets. Fillers and blockages are those of the cell-level problem; the grid
+    follows the clusters as the cell grid follows the cells (initializer.force_num_bin), between the grid of the
+    overflow and that of the cells."""
     n, device = data.num_mov, density.device
     size = torch.tensor(node_size[:n], dtype=torch.float32, device=device)
     scale = 1024                                    # areas as integers: exact sums, 1 / 1024 of a site area
@@ -121,7 +124,11 @@ def coarse_problem(data, node_size, wirelength, density, fixed_fraction, args):
     cpins = torch.bincount(c_owner, minlength=num + 1)[:num].double().cpu().numpy()
     del c_owner, c_net, off
     cnode = np.concatenate([csize.double().cpu().numpy(), node_size[n:]])
-    cden = ElectronicDensityLayer(data.width, data.height, density.nbx, density.nby, fixed_fraction, density.target,
+    judge_bin = density.judge.nbx if density.judge is not None else density.nbx
+    nb = min(density.nbx, force_num_bin(num, 1.0 - float(fixed_fraction.mean()), judge_bin))
+    if nb != density.nbx:
+        fixed_fraction = data.fixed_fraction(nb, nb)
+    cden = ElectronicDensityLayer(data.width, data.height, nb, nb, fixed_fraction, density.target,
                                   cnode, num, device, np.concatenate([cpins, np.zeros(len(cnode) - num)]))
     return SimpleNamespace(cid=cid, num=num, size=csize, wirelength=cwl, density=cden, total_pins=float(cpins.sum()),
                            total_area=float(cnode.prod(1).sum()), num_nodes=len(cnode))

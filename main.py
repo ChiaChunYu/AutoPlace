@@ -27,7 +27,8 @@ def get_option(argv=None):
     p.add_argument("--gpu", type=int, default=0, help="GPU id, -1 = CPU")
     # global placement
     p.add_argument("--target_density", type=float, default=1.0, help="density every bin may reach")
-    p.add_argument("--num_bin", type=int, default=0, help="density grid is num_bin x num_bin; 0 = from the row count")
+    p.add_argument("--num_bin", type=int, default=0, help="grid of the overflow (stop, schedule, report): num_bin x num_bin; 0 = from the row count")
+    p.add_argument("--force_num_bin", type=int, default=0, help="grid of the density force; 0 = from the cells (about one per free bin), at least --num_bin")
     p.add_argument("--stop_overflow", type=float, default=0.07, help="stop when the overflow is below this")
     p.add_argument("--inner_iter", type=int, default=10000, help="maximum iterations")
     p.add_argument("--settle_iter", type=int, default=30, help="iterations run after reaching --stop_overflow")

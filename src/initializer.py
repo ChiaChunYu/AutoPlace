@@ -13,6 +13,14 @@ def choose_num_bin(data, num_bin, max_bin=512):
     return min(max_bin, 2 ** int(math.log2(rows)))
 
 
+def force_num_bin(num_nodes, free_fraction, num_bin):
+    """The grid of the density force: about one node per free bin, 2^round(log2 sqrt(nodes / free fraction)) bins
+    per side, never coarser than `num_bin` (the grid of the overflow). With many small cells per bin, the smoothed
+    density (each cell spread over sqrt(2) bins) cannot see clumps of bin size, and a run can reach its overflow
+    while such clumps remain."""
+    return max(num_bin, 2 ** int(round(math.log2(math.sqrt(num_nodes / max(free_fraction, 1e-9))))))
+
+
 def compute_fillers(data, fixed_fraction, bin_area, args, logger):
     """Fillers take the free area the cells do not need, so every bin can reach the target density.
 

@@ -5,6 +5,9 @@ Smoothing. A side of a node narrower than sqrt(2) bins is widened to sqrt(2) bin
 keeping the charge.
 Field. Poisson's equation with zero field across the region boundary, solved by FFT on the mirrored map (the same
 solution as the DCT / DST formulation, without a custom transform).
+Two grids. The overflow (the stop, the schedule, the reported overflow) can be measured on another, coarser grid
+than the one of the force (`judge`): the force sees what a coarse grid hides, the overflow means what it means on
+the coarse grid.
 Map and gradient. On the GPU: two CUDA kernels, one thread per node (cpp_to_py/gp_cuda_kernel.cu). The PyTorch code
 (`_rasterize`) is the same computation for the CPU and the reference the kernels are tested against: every node is
 cut into pieces of at most 2 x 2 bins, so each piece touches 3 x 3 bins and the map is one vectorized scatter.
@@ -29,9 +32,9 @@ def make_pieces(size, bin_size):
 
 class ElectronicDensityLayer(object):
     def __init__(self, width, height, nbx, nby, fixed_fraction, target_density, node_size, num_mov, device,
-                 node_pins=None):
+                 node_pins=None, field=True):
         """node_size [num_mov + num_fillers, 2] numpy (real sizes); fixed_fraction [nbx, nby] numpy; node_pins [nodes]
-        numpy (only for the preconditioner of `forward`)."""
+        numpy (only for the preconditioner of `forward`); field=False: a grid that only measures overflows."""
         device = torch.device(device)
         self.nbx, self.nby, self.num_mov, self.num_nodes = nbx, nby, num_mov, len(node_size)
         self.target, self.device = target_density, device
@@ -58,6 +61,9 @@ class ElectronicDensityLayer(object):
         mx, my = (np.minimum(np.arange(2 * n), 2 * n - 1 - np.arange(2 * n)) for n in (nbx, nby))
         self.mirror = t((mx[:, None] * nby + my[None, :]).reshape(-1), torch.long)     # map -> mirrored map
 
+        self.judge = None                                   # the grid of the overflow, when it is not this one
+        if not field:
+            return
         # spectral field of the mirrored map. The 1 / bin_x factor is the ePlace / DREAMPlace / Xplace scale of the
         # density gradient (field in bin units), kept so the density weight and the preconditioner mean the same.
         kx = 2 * math.pi * torch.fft.fftfreq(2 * nbx, d=float(self.bin_np[0])).to(device).unsqueeze(1)
@@ -103,8 +109,14 @@ class ElectronicDensityLayer(object):
         return rho, over.sum() * (self.bin_area / self.mov_area)
 
     def exact_overflow(self, pos):
-        """Overflow of the movable cells with their real sizes (no smoothing, no fillers)."""
+        """Overflow of the movable cells with their real sizes (no smoothing, no fillers), on the grid of the overflow."""
+        if self.judge is not None:
+            return self.judge.exact_overflow(pos)
         return self._density(pos[:self.num_mov].contiguous(), self.real, self.num_mov)[1]
+
+    def smoothed_overflow(self, pos):
+        """Overflow of the smoothed movable cells (the overflow of `forward`). Needs a layer built without fillers."""
+        return self._density(pos[:self.num_mov].contiguous(), self.smooth, self.num_mov)[1]
 
     def forward(self, pos, wl_grad=None, weight=1.0, precond=-1.0):
         """pos [num_nodes, 2] -> (gradient [num_nodes, 2], overflow).
@@ -115,6 +127,8 @@ class ElectronicDensityLayer(object):
         """
         n, size, bx, by = self.smooth, (2 * self.nbx, 2 * self.nby), float(self.bin_np[0]), float(self.bin_np[1])
         mirrored, overflow = self._density(pos, n, self.num_mov)
+        if self.judge is not None:
+            overflow = self.judge.smoothed_overflow(pos)
         field = torch.fft.irfft2(torch.fft.rfft2(mirrored) * self.to_field, s=size)     # [2, 2 nbx, 2 nby], x and y
         wl_grad = self.no_grad if wl_grad is None else wl_grad
         if self.use_kernel:
