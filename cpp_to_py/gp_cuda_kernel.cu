@@ -170,7 +170,8 @@ void nesterov_step(const float* u, const float* v, const float* g, const float* 
 }
 
 // ---------------------------------------------------------------- control of the run, on the GPU
-// One thread: what NesterovOptimizer.step (the step length), ParamScheduler.step and ParamScheduler.need_to_stop do
+// One thread: what NesterovOptimizer.step (the step length), ParamScheduler.step (with src/resolution.py) and
+// ParamScheduler.need_to_stop do
 // on the host, in the same order and in double precision, so that a run needs no transfer to the host per
 // iteration. S is the state (layout: FIELDS in src/gpu_loop.py), kp the float parameters the other kernels read
 // (gamma, density weight, density weight x precond_coef, alpha, coef), c the constants of the run.

@@ -1,4 +1,4 @@
-"""The parameters that change during global placement, and when to stop.
+"""The parameters that change during global placement, and when to stop (the rules: src/resolution.py).
 
     density_weight  0 during the wirelength-only start, which ends when the WA wirelength has converged
                     (`--start_tol`); then set so that the density force on the cells is `--density_weight` of the
@@ -17,6 +17,8 @@
                     is under 0.3
 """
 import math
+
+from . import resolution
 
 
 class ParamScheduler(object):
@@ -75,18 +77,10 @@ class ParamScheduler(object):
     def smoothing(self, hpwl, overflow, wa):
         if self.args.wa_rule != "accuracy":
             return self.gamma(overflow)
-        error = max(1e-6, 1 - wa / max(hpwl, 1e-12))
-        g = self.wa_coeff * min(1.1, max(0.9, math.sqrt(max(overflow, 1e-3) / self.refine / error)))
-        return min(100 * self.base_gamma, max(0.01 * self.base_gamma, g))
+        return resolution.smoothing(self.wa_coeff, hpwl, wa, overflow, self.refine, self.base_gamma)
 
     def growth(self):
-        """1.05 ^ (1 - move / gamma), not below 1.05 x 0.95, move = the RMS move of the nodes in the last iteration:
-        the wirelength model resolves the order of cells closer than about its smoothing gamma, so the weight grows
-        slower when the nodes move further than that per iteration (the model can no longer follow). 1.05 x 0.98
-        when the HPWL fell."""
-        if self.hpwl[-1] < self.hpwl[-2]:
-            return 1.05 * 0.98
-        return 1.05 * max(1.05 ** (-self.motion * self.pitch / self.wa_coeff), 0.95)
+        return resolution.growth(self.motion, self.pitch, self.wa_coeff, self.hpwl[-1] < self.hpwl[-2])
 
     def need_to_stop(self):
         """-> reason to stop, or None; sets `is_best` when the caller should keep the current placement.

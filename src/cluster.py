@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from .core import ElectronicDensityLayer, Wirelength
-from .initializer import force_num_bin
+from .resolution import force_num_bin
 
 
 def _merge_edges(parts, n):

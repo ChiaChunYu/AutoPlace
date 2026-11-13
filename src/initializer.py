@@ -1,4 +1,4 @@
-"""Everything prepared once before the optimization: the density grid, the fillers, the start positions."""
+"""Everything prepared once before the optimization: the overflow grid, the fillers, the start positions."""
 import math
 
 import numpy as np
@@ -11,14 +11,6 @@ def choose_num_bin(data, num_bin, max_bin=512):
         return num_bin
     rows = max(int(data.height / data.row_height), 2)
     return min(max_bin, 2 ** int(math.log2(rows)))
-
-
-def force_num_bin(num_nodes, free_fraction, num_bin):
-    """The grid of the density force: about one node per free bin, 2^round(log2 sqrt(nodes / free fraction)) bins
-    per side, never coarser than `num_bin` (the grid of the overflow). With many small cells per bin, the smoothed
-    density (each cell spread over sqrt(2) bins) cannot see clumps of bin size, and a run can reach its overflow
-    while such clumps remain."""
-    return max(num_bin, 2 ** int(round(math.log2(math.sqrt(num_nodes / max(free_fraction, 1e-9))))))
 
 
 def compute_fillers(data, fixed_fraction, bin_area, args, logger):

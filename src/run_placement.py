@@ -16,7 +16,8 @@ from .cluster import coarse_problem, expand
 from .core import ElectronicDensityLayer, Wirelength
 from .database import PlaceData
 from .evaluator import evaluate_placement
-from .initializer import choose_num_bin, compute_fillers, force_num_bin, init_positions
+from .initializer import choose_num_bin, compute_fillers, init_positions
+from .resolution import force_num_bin, refine
 from .nesterov_optimizer import NesterovOptimizer, estimate_initial_learning_rate
 from .param_scheduler import ParamScheduler
 
@@ -32,9 +33,9 @@ def _sync(device):
 
 def _scheduler(density, num_mov, mov_area, total_pins, total_area, num_nodes, args, logger):
     # pitch: the spacing of the cells once they are spread at the target density
-    refine = density.nbx / density.judge.nbx if density.judge is not None else 1.0
     return ParamScheduler(SimpleNamespace(bin=density.bin_np, total_pins=total_pins, total_area=total_area, num_nodes=num_nodes,
-                                          pitch=math.sqrt(mov_area / density.target / num_mov), refine=refine), args, logger)
+                                          pitch=math.sqrt(mov_area / density.target / num_mov), refine=refine(density)),
+                          args, logger)
 
 
 def _place_level(pos, objective, ps, args, logger, first_iter=0):

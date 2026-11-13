@@ -109,7 +109,19 @@ In `--out_dir`:
 The objective is the one of ePlace / Xplace: WA wirelength + density weight x electrostatic density energy,
 minimized by Nesterov's method with a Barzilai-Borwein step, each node's gradient divided by
 max(1, pins + coefficient x density weight x area). Fillers take the free area the cells do not need. These parts
-follow Xplace; what AutoPlace changes is how a run is driven:
+follow Xplace; what AutoPlace changes is how a run is driven.
+
+**One rule links the parameters: every model works at the resolution of what it controls** (`src/resolution.py`):
+
+```
+cells, free area      ->  force grid           about one cell per free bin
+force grid            ->  refine               how many times finer the force sees than the overflow grid
+overflow / refine     ->  gamma                the wirelength model is kept that accurate (error 1 - WA / HPWL)
+gamma                 ->  density weight       grows while the cells move less per iteration than gamma resolves
+```
+
+Each link uses what the one before it set: smaller cells give a finer grid, a finer grid a sharper wirelength
+model, a sharper model a more careful density weight. The steps in detail:
 
 1. **Wirelength-only start.** All cells start in a small cloud at the centre. The density weight is 0 (no density
    map, no field) until the WA wirelength falls by less than `--start_tol` per iteration; the cells first find
