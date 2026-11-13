@@ -1,5 +1,5 @@
 """Two-level placement: the cells are merged into clusters, the clusters are placed first (a smaller problem with
-the same fillers and grid), then every cell starts on its cluster.
+the same fillers, on a grid chosen from the number of clusters), then every cell starts on its cluster.
 
 Clustering, on the device: rounds of star matching. In a round half of the clusters, drawn at random, are heads;
 every other cluster joins the head it shares the most net weight with per unit of merged area (a net of d pins gives
