@@ -1,4 +1,4 @@
-"""AutoPlace: GPU global placement from LEF + DEF (wirelength-driven; first layer).
+"""AutoPlace: GPU global placement from LEF + DEF (wirelength-driven).
 
     python main.py --lef tech.lef cells.lef --def floorplan.def --out_dir out/
     python main.py --lef ... --def floorplan.def --eval_def placed.def       # only evaluate a placement

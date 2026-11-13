@@ -64,14 +64,21 @@ class PlaceData(object):
 
         # pins: movable pin = cell index + offset from the cell centre; fixed pin = index num_mov + its position
         origin = np.array(self.region[:2], dtype=np.float64)
-        pin_xy = np.full((len(names), len(d.pin_names), 2), np.nan)   # [macro, pin name] -> pin centre from the lower left
-        for m, name in enumerate(names):
-            for k, pin in enumerate(d.pin_names):
-                if pin in lef.macros[name].pins:
-                    pin_xy[m, k] = np.array(lef.macros[name].pins[pin]) * dbu
         io = d.pin_comp < 0
         comp = np.where(io, 0, d.pin_comp)
-        xy = pin_xy[comp_macro[comp], d.pin_name]
+        # pin centre from the lower left, looked up once per (macro, pin name) pair the netlist uses
+        key = comp_macro[comp] * len(d.pin_names) + d.pin_name
+        used = np.zeros(len(names) * len(d.pin_names), dtype=bool)
+        used[key] = True
+        pair = np.nonzero(used)[0]
+        slot = np.zeros(len(used), dtype=np.int32)
+        slot[pair] = np.arange(len(pair))
+        pair_xy = np.full((len(pair), 2), np.nan)
+        for k, (m, pin) in enumerate(zip(pair // len(d.pin_names), pair % len(d.pin_names))):
+            xy_m = lef.macros[names[m]].pins.get(d.pin_names[pin])
+            if xy_m is not None:
+                pair_xy[k] = xy_m
+        xy = pair_xy[slot[key]] * dbu
         bad = np.nonzero(np.isnan(xy[:, 0]) & ~io)[0]
         if len(bad):
             raise ValueError("pin %s of macro %s is not in the LEF" % (d.pin_names[d.pin_name[bad[0]]], names[comp_macro[comp[bad[0]]]]))

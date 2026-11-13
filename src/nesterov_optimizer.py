@@ -1,9 +1,8 @@
-"""Nesterov's method with a Barzilai-Borwein step (ePlace, Algorithm 2, without its backtracking).
+"""Nesterov's method with a Barzilai-Borwein step.
 
 u is the main solution, v the look-ahead point the gradient is taken at. The step length alpha is the inverse of a
-local Lipschitz estimate |v' - v| / |g' - g|, measured on every step and used for the next one. ePlace redoes a step
-whose estimate shrank by more than 5 %; every step is taken here: the redone steps were 9 % of the gradient calls,
-and taking them changes the HPWL by +0.07 % (43 designs, 3 seeds).
+local Lipschitz estimate |v' - v| / |g' - g|: every step is taken, and the estimate measured on it is the length of
+the next one.
 """
 import math
 

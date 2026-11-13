@@ -98,7 +98,8 @@ def global_placement_main(data, wirelength, density, pos, node_size, fixed_fract
         pos.copy_(expand(cpos, coarse, node_size, args.seed)).clamp_(min=density.pos_lo, max=density.pos_hi)
         # the same share of the wire tension on both levels
         weight = cps.density_weight * objective.tension_unit(pos) / cobjective.tension_unit(cpos)
-        ps.resume(cps, weight, wirelength.forward(pos, ps.wa_coeff)[2].item(), density.forward(pos)[1].item())
+        overflow = density.forward(pos)[1].item() if args.wa_rule == "overflow" else None     # only the formula needs it
+        ps.resume(cps, weight, wirelength.forward(pos, ps.wa_coeff)[2].item(), overflow)
         logger.info("clusters placed after %d iterations (stop: %s, hpwl %.4E, overflow %.4f): the cells take over, density weight %.4E"
                     % (level.iters, level.reason, level.hpwl, level.overflow, weight))
         evals, first_iter, start_iters = cobjective.evals, level.iters, level.start_iters
@@ -140,9 +141,10 @@ def run_placement_main(args, logger):
 
     num_bin = choose_num_bin(data, args.num_bin)                # the grid of the overflow
     evaluate_only = bool(args.eval_def)
-    free = 1.0 - float(data.fixed_fraction(num_bin, num_bin).mean())
+    judge_fraction = data.fixed_fraction(num_bin, num_bin)
+    free = 1.0 - float(judge_fraction.mean())
     force_bin = num_bin if evaluate_only else (args.force_num_bin or force_num_bin(data.num_mov, free, num_bin))
-    fixed_fraction = data.fixed_fraction(force_bin, force_bin)
+    fixed_fraction = judge_fraction if force_bin == num_bin else data.fixed_fraction(force_bin, force_bin)
     bin_area = data.width / force_bin * data.height / force_bin
     if evaluate_only:
         node_size = data.size
@@ -162,7 +164,7 @@ def run_placement_main(args, logger):
                                      node_size, data.num_mov, device,
                                      np.concatenate([data.cell_pins, np.zeros(len(node_size) - data.num_mov)]))
     if force_bin != num_bin:
-        density.judge = ElectronicDensityLayer(data.width, data.height, num_bin, num_bin, data.fixed_fraction(num_bin, num_bin),
+        density.judge = ElectronicDensityLayer(data.width, data.height, num_bin, num_bin, judge_fraction,
                                                args.target_density, data.size, data.num_mov, device, field=False)
     metrics = {"design": data.name, "num_movable": data.num_mov, "num_nets": data.num_nets, "num_pins": data.num_pins,
                "num_fillers": len(node_size) - data.num_mov, "num_bin": num_bin, "force_num_bin": force_bin, "target_density": args.target_density,

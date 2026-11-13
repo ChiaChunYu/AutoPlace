@@ -58,8 +58,9 @@ class ElectronicDensityLayer(object):
         self.area = t(real.prod(1))
         self.no_grad = torch.zeros(0, 2, device=device)
         self._scalars = torch.empty(2, device=device)      # weight, precond for the kernel, when given as floats
-        mx, my = (np.minimum(np.arange(2 * n), 2 * n - 1 - np.arange(2 * n)) for n in (nbx, nby))
-        self.mirror = t((mx[:, None] * nby + my[None, :]).reshape(-1), torch.long)     # map -> mirrored map
+        if not self.use_kernel:                             # map -> mirrored map (the kernel mirrors by itself)
+            mx, my = (np.minimum(np.arange(2 * n), 2 * n - 1 - np.arange(2 * n)) for n in (nbx, nby))
+            self.mirror = t((mx[:, None] * nby + my[None, :]).reshape(-1), torch.long)
 
         self.judge = None                                   # the grid of the overflow, when it is not this one
         if not field:

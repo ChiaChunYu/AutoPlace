@@ -4,8 +4,8 @@
                     (`--start_tol`); then set so that the density force on the cells is `--density_weight` of the
                     full wire tension (every pin pulling), and from there multiplied every iteration by at most
                     1.05: less the further the nodes moved in the last iteration, against the smoothing gamma of the
-                    wirelength model (how far it resolves the order of cells), and less when the HPWL fell (the wirelength is still catching up); updated
-                    every iteration (the motion is what slows it down, no fixed slow window)
+                    wirelength model (how far it resolves the order of cells), and less when the HPWL fell (the
+                    wirelength is still catching up)
     wa_coeff        the smoothing gamma of the WA wirelength, starting at 10 x the unit (`--wa_coeff` x bin sizes).
                     --wa_rule accuracy: every iteration multiplied by sqrt(target / error), within 0.9 to 1.1, where
                     error = 1 - WA / HPWL is the measured error of the model and target = overflow / refine (refine =
@@ -48,8 +48,9 @@ class ParamScheduler(object):
     def gamma(self, overflow):
         return self.base_gamma * 10 ** ((overflow - 0.1) * 20 / 9 - 1)
 
-    def resume(self, coarse, density_weight, hpwl, overflow):
-        """Go on where the run on the clusters (`coarse`, its scheduler) stopped; no wirelength-only start."""
+    def resume(self, coarse, density_weight, hpwl, overflow=None):
+        """Go on where the run on the clusters (`coarse`, its scheduler) stopped; no wirelength-only start.
+        overflow: of the cells at the hand-over (used by --wa_rule overflow only)."""
         self.density_weight, self.precond_coef, self.iter = density_weight, coarse.precond_coef, coarse.iter
         if self.args.wa_rule == "accuracy":     # the same smoothing in units of the bin
             self.wa_coeff = coarse.wa_coeff / coarse.base_gamma * self.base_gamma
