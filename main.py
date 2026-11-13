@@ -42,7 +42,6 @@ def get_option(argv=None):
                    help="how the WA smoothing follows the run: accuracy = from the measured model error 1 - WA / HPWL, "
                         "kept at the overflow / grid refinement; overflow = Xplace's formula of the overflow")
     p.add_argument("--cluster_ratio", type=float, default=5, help="clusters of this many cells are placed first, then the cells (two levels); 1 = cells only")
-    p.add_argument("--handover_overflow", type=float, default=0.7, help="overflow of the clusters at which the cells take over")
     p.add_argument("--lr", type=float, default=0.01, help="length of the probe step that sets the first step size")
     p.add_argument("--log_freq", type=int, default=100)
     return p.parse_args(argv)

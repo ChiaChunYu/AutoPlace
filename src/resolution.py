@@ -7,6 +7,9 @@
                                 gamma (the WA smoothing) follows it                             (smoothing)
     gamma                   ->  growth of the density weight: the cells may move per iteration
                                 about as far as the model resolves                             (growth)
+    growth                  ->  how far gamma may move in one iteration                        (smoothing)
+    gamma of the clusters   ->  hand-over to the cells, once the cluster model is as sharp as the cell level
+                                starts                                                         (handover)
 
 Each link uses what the one before it set, so a change upstream (smaller cells, a finer grid) carries through: a
 finer grid asks a sharper wirelength model, and a sharper model a more careful density weight. The host scheduler
@@ -27,12 +30,14 @@ def refine(density):
     return density.nbx / density.judge.nbx if density.judge is not None else 1.0
 
 
-def smoothing(gamma, hpwl, wa, overflow, refine, unit):
-    """Next WA smoothing: gamma x sqrt(target / error), within 0.9 to 1.1 per iteration and 0.01 to 100 x `unit`.
+def smoothing(gamma, hpwl, wa, overflow, refine, unit, mu):
+    """Next WA smoothing: gamma x sqrt(target / error), kept within 0.01 to 100 x `unit`; per iteration it moves by
+    at most the factor the density weight moves by (mu, or 1 / mu), so the model and the weight keep one pace.
     error = 1 - WA / HPWL, the measured error of the model; target = overflow / refine: a smooth model while much is
     still to spread, and as sharp as the density force resolves at the end."""
     error = max(1e-6, 1 - wa / max(hpwl, 1e-12))
-    g = gamma * min(1.1, max(0.9, math.sqrt(max(overflow, 1e-3) / refine / error)))
+    m = max(mu, 1.0 / mu)
+    g = gamma * min(m, max(1.0 / m, math.sqrt(max(overflow, 1e-3) / refine / error)))
     return min(100 * unit, max(0.01 * unit, g))
 
 
@@ -43,3 +48,9 @@ def growth(motion, pitch, gamma, hpwl_fell):
     if hpwl_fell:
         return 1.05 * 0.98
     return 1.05 * max(1.05 ** (-motion * pitch / gamma), 0.95)
+
+
+def handover(gamma, start_gamma):
+    """The clusters hand over to the cells once their wirelength model is as sharp as the one the cells start with:
+    from there the clusters cannot resolve anything the cells would not."""
+    return gamma <= start_gamma

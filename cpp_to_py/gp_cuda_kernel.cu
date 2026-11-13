@@ -174,11 +174,11 @@ void nesterov_step(const float* u, const float* v, const float* g, const float* 
 // ParamScheduler.need_to_stop do
 // on the host, in the same order and in double precision, so that a run needs no transfer to the host per
 // iteration. S is the state (layout: FIELDS in src/gpu_loop.py), kp the float parameters the other kernels read
-// (gamma, density weight, density weight x precond_coef, alpha, coef), c the constants of the run.
-enum { LAM, GAM, PCOEF, ALPHA, A, ITER, HPWL_PREV, MOTION, WW, MU, SETTLED, BEST_HPWL, BEST_OVF, IS_BEST, IMPROVED, STOP,
+// (gamma, density weight, density weight in the preconditioner, alpha, coef), c the constants of the run.
+enum { LAM, GAM, ALPHA, A, ITER, HPWL_PREV, MOTION, WW, MU, SETTLED, BEST_HPWL, BEST_OVF, IS_BEST, IMPROVED, STOP,
        ACCEPT, LOOP_IT, EVALS, RES_HPWL, RES_OVF, HAS_BEST };
 enum { C_BASE_GAMMA, C_MOTION_UNIT, C_TOTAL_PINS, C_TOTAL_AREA, C_PITCH, C_MIN_ITER, C_STOP_OVF, C_SETTLE,
-       C_STALL, C_INNER, C_REFINE, C_ACCURACY };
+       C_STALL, C_INNER, C_REFINE, C_ACCURACY, C_HANDOVER };
 
 __global__ void control_kernel(double* S, float* kp, const double* c, const float* moved_p, const float* turned_p,
                                const float* hpwl_p, const float* ovf_p, const float* wa_p) {
@@ -196,18 +196,17 @@ __global__ void control_kernel(double* S, float* kp, const double* c, const floa
     // ParamScheduler.step
     double iter = S[ITER];
     S[MOTION] = moved / c[C_MOTION_UNIT];
-    double part = S[PCOEF] * S[LAM] * c[C_TOTAL_AREA];
+    double part = S[LAM] * c[C_TOTAL_AREA];
     S[WW] = part / (c[C_TOTAL_PINS] + part);
     double mu = hpwl < S[HPWL_PREV] ? 1.05 * 0.98 : 1.05 * fmax(pow(1.05, -S[MOTION] * c[C_PITCH] / S[GAM]), 0.95);
     S[HPWL_PREV] = hpwl; S[MU] = mu; S[LAM] *= mu;
-    if (c[C_ACCURACY] != 0) {                                      // ParamScheduler.smoothing, --wa_rule accuracy
-        double err = fmax(1e-6, 1 - wa / fmax(hpwl, 1e-12));
-        double g = S[GAM] * fmin(1.1, fmax(0.9, sqrt(fmax(ovf, 1e-3) / c[C_REFINE] / err)));
+    if (c[C_ACCURACY] != 0) {                                      // resolution.smoothing, --wa_rule accuracy
+        double err = fmax(1e-6, 1 - wa / fmax(hpwl, 1e-12)), m = fmax(mu, 1 / mu);
+        double g = S[GAM] * fmin(m, fmax(1 / m, sqrt(fmax(ovf, 1e-3) / c[C_REFINE] / err)));
         S[GAM] = fmin(100 * c[C_BASE_GAMMA], fmax(0.01 * c[C_BASE_GAMMA], g));
     } else {
         S[GAM] = c[C_BASE_GAMMA] * pow(10.0, (ovf - 0.1) * 20 / 9 - 1);
     }
-    if (ovf < 0.3 && S[PCOEF] < 1024 && fmod(iter, 20.0) == 0) S[PCOEF] *= 2;
     S[ITER] = iter = iter + 1;
     // ParamScheduler.need_to_stop
     double stop = 0, is_best = 0;
@@ -227,6 +226,7 @@ __global__ void control_kernel(double* S, float* kp, const double* c, const floa
             if ((is_best && S[SETTLED] > 0) || S[WW] < 0.95) S[IMPROVED] = iter;
             if (iter - S[IMPROVED] > c[C_STALL]) stop = 2;                                  // stalled
         }
+        if (stop == 0 && c[C_HANDOVER] > 0 && S[LAM] > 0 && S[GAM] <= c[C_HANDOVER]) stop = 5;   // handover
     }
     S[IS_BEST] = is_best;
     if (is_best) { S[RES_HPWL] = hpwl; S[RES_OVF] = ovf; S[HAS_BEST] = 1; }
@@ -235,7 +235,7 @@ __global__ void control_kernel(double* S, float* kp, const double* c, const floa
     S[STOP] = stop;
     if (!S[HAS_BEST]) { S[RES_HPWL] = hpwl; S[RES_OVF] = ovf; }
     double a_next = (1 + sqrt(4 * S[A] * S[A] + 1)) / 2;
-    kp[0] = (float)S[GAM]; kp[1] = (float)S[LAM]; kp[2] = (float)(S[PCOEF] * S[LAM]);
+    kp[0] = (float)S[GAM]; kp[1] = (float)S[LAM]; kp[2] = (float)S[LAM];
     kp[3] = (float)alpha_next; kp[4] = (float)((S[A] - 1) / a_next);
 }
 

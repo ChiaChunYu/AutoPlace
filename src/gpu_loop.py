@@ -17,10 +17,10 @@ import torch
 from cpp_to_py import gp_cuda
 
 # layout of the state, as `enum` in control_kernel
-FIELDS = ("lam gam pcoef alpha a iter hpwl_prev motion ww mu settled best_hpwl best_ovf is_best improved stop accept "
+FIELDS = ("lam gam alpha a iter hpwl_prev motion ww mu settled best_hpwl best_ovf is_best improved stop accept "
           "loop_it evals res_hpwl res_ovf has_best").split()
 K = {name: i for i, name in enumerate(FIELDS)}
-REASON = {1: "converged", 2: "stalled", 3: "diverged", 4: "max_iter"}
+REASON = {1: "converged", 2: "stalled", 3: "diverged", 4: "max_iter", 5: "handover"}
 
 
 def usable(optimizer):
@@ -38,19 +38,18 @@ def run_level_on_gpu(optimizer, objective, ps, args, logger, iteration, check_ev
     device, pos = optimizer.v.device, optimizer.v
     S = [0.0] * len(FIELDS)
     S[K["lam"]], S[K["gam"]], S[K["alpha"]], S[K["a"]] = ps.density_weight, ps.wa_coeff, optimizer.alpha, optimizer.a
-    S[K["pcoef"]] = ps.precond_coef
     S[K["iter"]], S[K["hpwl_prev"]], S[K["motion"]], S[K["ww"]] = ps.iter, ps.hpwl[-1], ps.motion, ps.weighted_weight
     S[K["mu"]], S[K["settled"]], S[K["improved"]] = ps.mu, ps.settled, ps.improved_iter
     S[K["best_hpwl"]], S[K["best_ovf"]] = ps.best_hpwl, ps.best_overflow
     S[K["loop_it"]] = iteration
     S = torch.tensor(S, dtype=torch.float64, device=device)
-    kp = torch.tensor([ps.wa_coeff, ps.density_weight, ps.precond_coef * ps.density_weight, optimizer.alpha,
+    kp = torch.tensor([ps.wa_coeff, ps.density_weight, ps.density_weight, optimizer.alpha,
                        _next_coef(optimizer.a)],
                       dtype=torch.float32, device=device)
     a = ps.args
     c = torch.tensor([ps.base_gamma, ps.motion_unit, ps.total_pins, ps.total_area, ps.pitch, a.min_iter,
                       a.stop_overflow, a.settle_iter, a.stall_iter, args.inner_iter, ps.refine,
-                      float(a.wa_rule == "accuracy")],
+                      float(a.wa_rule == "accuracy"), ps.handover_gamma or 0.0],
                      dtype=torch.float64, device=device)
     u, g, lo, hi = optimizer.u, optimizer.g, optimizer.lo, optimizer.hi
     best = pos.clone()
@@ -72,7 +71,6 @@ def run_level_on_gpu(optimizer, objective, ps, args, logger, iteration, check_ev
     S = S.tolist()
     get = lambda name: S[K[name]]
     ps.density_weight, ps.wa_coeff, ps.iter, ps.motion = get("lam"), get("gam"), int(get("iter")), get("motion")
-    ps.precond_coef = get("pcoef")
     ps.weighted_weight, ps.mu, ps.settled = get("ww"), get("mu"), int(get("settled"))
     ps.best_hpwl, ps.best_overflow, ps.improved_iter = get("best_hpwl"), get("best_ovf"), int(get("improved"))
     ps.hpwl.append(get("hpwl_prev"))

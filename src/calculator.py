@@ -1,5 +1,5 @@
 """The gradient of the objective of global placement:  WA wirelength + density_weight x density energy,
-divided per node by the preconditioner max(1, #pins + precond_coef x density_weight x area).
+divided per node by the preconditioner max(1, #pins + density_weight x area).
 
 The value of the objective is not needed by the optimizer, so it is never computed; the HPWL and the overflow of the
 evaluated point come for free from the same pass.
@@ -30,14 +30,13 @@ class Objective(object):
             grad, self.overflow = torch.zeros_like(pos), self.not_measured
             grad[:len(wl_grad)] = wl_grad / self.pin_precond
         else:
-            grad, self.overflow = self.density.forward(pos, wl_grad, self.ps.density_weight,
-                                                       self.ps.precond_coef * self.ps.density_weight)
+            grad, self.overflow = self.density.forward(pos, wl_grad, self.ps.density_weight, self.ps.density_weight)
         self.evals += 1
         return grad
 
     def on_gpu(self, pos, kp):
         """The same gradient with the parameters in device memory: kp = (wa smoothing, density weight,
-        density weight x precond_coef, ...) as set by the control kernel (src/gpu_loop.py)."""
+        density weight in the preconditioner, ...) as set by the control kernel (src/gpu_loop.py)."""
         self.wa, wl_grad, self.hpwl = self.wirelength.forward(pos, kp[0:1])
         grad, self.overflow = self.density.forward(pos, wl_grad, kp[1:2], kp[2:3])
         self.evals += 1

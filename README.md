@@ -87,7 +87,6 @@ The same input, options and GPU give the same `gp.def`.
 | `--wa_coeff` | 4.0 | unit of the WA smoothing, in bin sizes (as Xplace); the smoothing starts at 10 units |
 | `--wa_rule` | accuracy | how the WA smoothing follows the run: `accuracy` = from the measured model error, `overflow` = Xplace's formula |
 | `--cluster_ratio` | 5 | cells per cluster for the two-level placement; 1 = one level |
-| `--handover_overflow` | 0.7 | overflow of the clusters at which the cells take over |
 | `--lr` | 0.01 | length of the probe step that sets the first step size |
 | `--log_freq` | 100 | log every this many iterations |
 
@@ -108,7 +107,7 @@ In `--out_dir`:
 
 The objective is the one of ePlace / Xplace: WA wirelength + density weight x electrostatic density energy,
 minimized by Nesterov's method with a Barzilai-Borwein step, each node's gradient divided by
-max(1, pins + coefficient x density weight x area). Fillers take the free area the cells do not need. These parts
+max(1, pins + density weight x area). Fillers take the free area the cells do not need. These parts
 follow Xplace; what AutoPlace changes is how a run is driven.
 
 **One rule links the parameters: every model works at the resolution of what it controls** (`src/resolution.py`):
@@ -118,10 +117,13 @@ cells, free area      ->  force grid           about one cell per free bin
 force grid            ->  refine               how many times finer the force sees than the overflow grid
 overflow / refine     ->  gamma                the wirelength model is kept that accurate (error 1 - WA / HPWL)
 gamma                 ->  density weight       grows while the cells move less per iteration than gamma resolves
+weight's growth       ->  gamma's pace         gamma moves per iteration by at most the weight's factor
+gamma of the clusters ->  hand-over            the cells take over once the cluster model is as sharp as theirs
 ```
 
 Each link uses what the one before it set: smaller cells give a finer grid, a finer grid a sharper wirelength
-model, a sharper model a more careful density weight. The steps in detail:
+model, a sharper model a more careful density weight, and the clusters hand over when they can resolve nothing the
+cells would not. The steps in detail:
 
 1. **Wirelength-only start.** All cells start in a small cloud at the centre. The density weight is 0 (no density
    map, no field) until the WA wirelength falls by less than `--start_tol` per iteration; the cells first find
@@ -138,7 +140,9 @@ model, a sharper model a more careful density weight. The steps in detail:
 4. **Two levels.** The cells are merged into clusters of about `--cluster_ratio` cells (star matching on the GPU: in
    each round half of the clusters are heads and every other cluster joins the head it shares the most net weight
    with per unit of merged area; a net of d pins gives 1 / (d - 1) to each pair; macros stay alone). The clusters
-   are placed first, with the steps above, until their overflow is under `--handover_overflow`; then every cell
+   are placed first, with the steps above, until their wirelength model is as sharp as the one the cells start
+   with (their gamma down to the cells' starting gamma, so a cell grid finer than the cluster grid keeps the
+   clusters longer); then every cell
    starts at a random point inside the square of its cluster, with the density weight carried over in tension
    units, and the run continues on the cells.
 5. **Density grid from the design.** The force is computed on its own grid with about one cell per free bin
@@ -176,8 +180,8 @@ Against Xplace (upstream, same LEF / DEF, target density and overflow grid, each
 
 | Benchmark | Designs | HPWL / Xplace | Iterations / Xplace | GP time / Xplace |
 |---|---|---|---|---|
-| ISPD 2019 | 9 (test1-4, 6-10; 8 k to 900 k cells) | 0.9989 | 0.509 | 0.34 |
-| ISPD 2015 | 18 (fences removed as in Xplace; 30 k to 1.3 M cells) | 0.9948 | 0.541 | 0.29 |
+| ISPD 2019 | 9 (test1-4, 6-10; 8 k to 900 k cells) | 0.9967 | 0.518 | 0.34 |
+| ISPD 2015 | 18 (fences removed as in Xplace; 30 k to 1.3 M cells) | 0.9957 | 0.552 | 0.29 |
 
 GP time: global placement only (for AutoPlace, clustering and both levels), median of 3 runs on an RTX 3070.
 

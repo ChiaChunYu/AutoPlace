@@ -91,8 +91,9 @@ def global_placement_main(data, wirelength, density, pos, node_size, fixed_fract
         logger.info("two levels: %d clusters of %d cells (%.2fs), %d x %d bins"
                     % (coarse.num, n, stats["cluster_time_s"], coarse.density.nbx, coarse.density.nby))
         cargs = SimpleNamespace(**vars(args))
-        cargs.stop_overflow, cargs.settle_iter, cargs.min_iter = args.handover_overflow, 0, 0
+        cargs.settle_iter, cargs.min_iter = 0, 0
         cps = _scheduler(coarse.density, coarse.num, data.mov_area, coarse.total_pins, coarse.total_area, coarse.num_nodes, cargs, logger)
+        cps.handover_gamma = ps.wa_coeff                        # the smoothing the cells start with
         cobjective = Objective(coarse.wirelength, coarse.density, cps)
         cpos = torch.cat([pos[:coarse.num], pos[n:]])
         level = _place_level(cpos, cobjective, cps, cargs, logger)

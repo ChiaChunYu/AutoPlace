@@ -12,9 +12,9 @@
                     how many times finer the force grid is than the overflow grid): a smooth model while much is to
                     spread, an accurate one at the end, as accurate as the density force can resolve; kept within
                     0.01 to 100 x the unit. --wa_rule overflow: Xplace's formula of the overflow
-    precond_coef    the preconditioner of a node is #pins + precond_coef x density_weight x area, at least 1 (the
-                    diagonal the gradient is divided by); precond_coef doubles every 20 iterations once the overflow
-                    is under 0.3
+    preconditioner  a node's gradient is divided by max(1, #pins + density_weight x area)
+    handover_gamma  (clusters only) the run ends ("handover") once the smoothing is down to it: the smoothing the
+                    cells start with
 """
 import math
 
@@ -30,7 +30,7 @@ class ParamScheduler(object):
         self.refine = data.refine               # force bins / overflow bins per side
         self.wa_coeff = 10 * self.base_gamma
         self.density_weight = 0.0
-        self.precond_coef = 1.0
+        self.handover_gamma = None
         self.total_pins, self.total_area = data.total_pins, data.total_area      # over every node (fillers: 0 pins)
         self.pitch = data.pitch
         self.motion_unit = data.pitch * math.sqrt(data.num_nodes)     # L2 norm of "every node moved one cell pitch"
@@ -53,7 +53,7 @@ class ParamScheduler(object):
     def resume(self, coarse, density_weight, hpwl, overflow=None):
         """Go on where the run on the clusters (`coarse`, its scheduler) stopped; no wirelength-only start.
         overflow: of the cells at the hand-over (used by --wa_rule overflow only)."""
-        self.density_weight, self.precond_coef, self.iter = density_weight, coarse.precond_coef, coarse.iter
+        self.density_weight, self.iter = density_weight, coarse.iter
         if self.args.wa_rule == "accuracy":     # the same smoothing in units of the bin
             self.wa_coeff = coarse.wa_coeff / coarse.base_gamma * self.base_gamma
         else:
@@ -63,21 +63,19 @@ class ParamScheduler(object):
     def step(self, hpwl, overflow, moved, wa):
         """moved: L2 norm of the move of all nodes in the last iteration (the optimizer has it); wa: WA wirelength."""
         self.motion = moved / self.motion_unit
-        density_part = self.precond_coef * self.density_weight * self.total_area
+        density_part = self.density_weight * self.total_area
         self.weighted_weight = density_part / (self.total_pins + density_part)
         self.hpwl.append(hpwl)
         self.overflow.append(overflow)
         self.mu = self.growth()
         self.density_weight *= self.mu
         self.wa_coeff = self.smoothing(hpwl, overflow, wa)
-        if overflow < 0.3 and self.precond_coef < 1024 and self.iter % 20 == 0:
-            self.precond_coef *= 2
         self.iter += 1
 
     def smoothing(self, hpwl, overflow, wa):
         if self.args.wa_rule != "accuracy":
             return self.gamma(overflow)
-        return resolution.smoothing(self.wa_coeff, hpwl, wa, overflow, self.refine, self.base_gamma)
+        return resolution.smoothing(self.wa_coeff, hpwl, wa, overflow, self.refine, self.base_gamma, self.mu)
 
     def growth(self):
         return resolution.growth(self.motion, self.pitch, self.wa_coeff, self.hpwl[-1] < self.hpwl[-2])
@@ -113,4 +111,6 @@ class ParamScheduler(object):
                                                 # overflow is not expected to fall (wirelength-driven start)
         if self.iter - self.improved_iter > self.args.stall_iter:
             return "stalled"
+        if self.handover_gamma and self.density_weight > 0 and resolution.handover(self.wa_coeff, self.handover_gamma):
+            return "handover"
         return None
