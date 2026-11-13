@@ -32,8 +32,9 @@ def _sync(device):
 
 def _scheduler(density, num_mov, mov_area, total_pins, total_area, num_nodes, args, logger):
     # pitch: the spacing of the cells once they are spread at the target density
+    refine = density.nbx / density.judge.nbx if density.judge is not None else 1.0
     return ParamScheduler(SimpleNamespace(bin=density.bin_np, total_pins=total_pins, total_area=total_area, num_nodes=num_nodes,
-                                          pitch=math.sqrt(mov_area / density.target / num_mov)), args, logger)
+                                          pitch=math.sqrt(mov_area / density.target / num_mov), refine=refine), args, logger)
 
 
 def _place_level(pos, objective, ps, args, logger, first_iter=0):
@@ -62,7 +63,7 @@ def _place_level(pos, objective, ps, args, logger, first_iter=0):
                 logger.info("wirelength-only start over after %d iterations (hpwl %.4E): density weight %.4E"
                             % (start_iters, hpwl, ps.density_weight))
             continue
-        ps.step(hpwl, overflow, optimizer.moved)
+        ps.step(hpwl, overflow, optimizer.moved, wa)
         stop = ps.need_to_stop()
         if ps.is_best:
             best = (pos.clone(), hpwl, overflow)

@@ -11,11 +11,11 @@ cells by matching them along their nets, and the clusters are placed first. The 
 wirelength alone: the density is switched on only once the wirelength has settled, with a first density weight
 set in units of the wire tension, and the weight grows each iteration by how far the cells moved. When the
 clusters are spread enough, every cell starts inside its cluster and the run continues on the cells with the same
-weight, until the overflow is reached. During the run the step size, the density weight, the smoothing and the
-stop are decided on the GPU, so the host never waits on an iteration.
+weight, until the overflow is reached. The smoothing of the wirelength model follows its measured error instead of a fixed curve. During the run
+the step size, the density weight, the smoothing and the stop are decided on the GPU, so the host never waits on an iteration.
 
 On the ISPD 2015 / 2019 benchmarks it uses about half of Xplace's iterations and a third of its global-placement
-time, at an HPWL within 1 % ([Results](#results)). Details of each step are in [How it works](#how-it-works).
+time, at a slightly lower HPWL ([Results](#results)). Details of each step are in [How it works](#how-it-works).
 
 ## Contents
 
@@ -83,7 +83,8 @@ The same input, options and GPU give the same `gp.def`.
 | `--start_tol` | 1e-3 | the wirelength-only start ends when the WA wirelength falls by less than this share per iteration |
 | `--density_weight` | 1e-3 | first density weight, as a share of the full wire tension |
 | `--ref_motion` | 5.0 | cell motion per iteration (RMS, in cell pitches) at which the density weight stops growing |
-| `--wa_coeff` | 4.0 | WA smoothing, in bin sizes (as Xplace) |
+| `--wa_coeff` | 4.0 | unit of the WA smoothing, in bin sizes (as Xplace); the smoothing starts at 10 units |
+| `--wa_rule` | accuracy | how the WA smoothing follows the run: `accuracy` = from the measured model error, `overflow` = Xplace's formula |
 | `--cluster_ratio` | 5 | cells per cluster for the two-level placement; 1 = one level |
 | `--handover_overflow` | 0.7 | overflow of the clusters at which the cells take over |
 | `--lr` | 0.01 | length of the probe step that sets the first step size |
@@ -135,15 +136,21 @@ follow Xplace; what AutoPlace changes is how a run is driven:
    weight, the WA smoothing, the preconditioner and the stop rules are decided by one GPU thread, in double
    precision; the kernels read their parameters from device memory and the host only looks every 16 iterations
    whether the run has stopped.
-7. **Own CUDA kernels and DEF reader / writer.** The density map and the wirelength are summed in a fixed order or
+7. **WA smoothing from the measured model error.** Instead of Xplace's fixed curve of the overflow, the smoothing
+   keeps the error of the wirelength model (1 - WA / HPWL) at the overflow divided by the grid refinement, so it
+   adapts to each design and to the resolution of the density force (below).
+8. **Own CUDA kernels and DEF reader / writer.** The density map and the wirelength are summed in a fixed order or
    in fixed point, so the same input gives the same bits.
 
 Stops: `converged` (overflow under `--stop_overflow`, then `--settle_iter` more iterations, lowest HPWL kept),
 `stalled` (no improvement for `--stall_iter` iterations while the density term dominates; lowest overflow kept),
 `diverged` (a step that is not finite is not taken; the last finite placement is kept), `max_iter`.
 
-The WA smoothing is Xplace's: `--wa_coeff` x (bin width + bin height) x 10^((overflow - 0.1) x 20 / 9 - 1), in
-bins of the force grid.
+The WA smoothing (`--wa_rule accuracy`) follows the measured error of the wirelength model, 1 - WA / HPWL:
+every iteration it is multiplied by sqrt(target / error), by at most 10 %, with target = overflow / refinement
+(how many times finer the force grid is than the overflow grid). The model is smooth while much is still to spread
+and as accurate as the density force can resolve at the end; it starts at 10 x `--wa_coeff` x (bin width + bin
+height). `--wa_rule overflow` uses Xplace's formula of the overflow instead.
 
 ## Results
 
@@ -152,8 +159,8 @@ Against Xplace (upstream, same LEF / DEF, target density and overflow grid, each
 
 | Benchmark | Designs | HPWL / Xplace | Iterations / Xplace | GP time / Xplace |
 |---|---|---|---|---|
-| ISPD 2019 | 9 (test1-4, 6-10; 8 k to 900 k cells) | 1.0014 | 0.535 | 0.33 |
-| ISPD 2015 | 18 (fences removed as in Xplace; 30 k to 1.3 M cells) | 1.0069 | 0.519 | 0.29 |
+| ISPD 2019 | 9 (test1-4, 6-10; 8 k to 900 k cells) | 0.9974 | 0.557 | 0.36 |
+| ISPD 2015 | 18 (fences removed as in Xplace; 30 k to 1.3 M cells) | 0.9962 | 0.545 | 0.31 |
 
 GP time: global placement only (for AutoPlace, clustering and both levels), median of 3 runs on an RTX 3070.
 

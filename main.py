@@ -37,7 +37,10 @@ def get_option(argv=None):
     p.add_argument("--ignore_net_degree", type=int, default=100, help="nets with more pins are not optimized")
     p.add_argument("--start_tol", type=float, default=1e-3, help="the wirelength-only start ends when the WA wirelength falls by less than this share per iteration")
     p.add_argument("--density_weight", type=float, default=1e-3, help="first density weight: the density force as a share of the full wire tension")
-    p.add_argument("--wa_coeff", type=float, default=4.0, help="WA smoothing, in bin sizes")
+    p.add_argument("--wa_coeff", type=float, default=4.0, help="WA smoothing, in bin sizes (the unit of the smoothing, and its start x 10)")
+    p.add_argument("--wa_rule", choices=["accuracy", "overflow"], default="accuracy",
+                   help="how the WA smoothing follows the run: accuracy = from the measured model error 1 - WA / HPWL, "
+                        "kept at the overflow / grid refinement; overflow = Xplace's formula of the overflow")
     p.add_argument("--ref_motion", type=float, default=5.0, help="move per iteration (RMS, in cell pitches) at which the density weight stops growing")
     p.add_argument("--cluster_ratio", type=float, default=5, help="clusters of this many cells are placed first, then the cells (two levels); 1 = cells only")
     p.add_argument("--handover_overflow", type=float, default=0.7, help="overflow of the clusters at which the cells take over")

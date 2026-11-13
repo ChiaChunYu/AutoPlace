@@ -177,13 +177,13 @@ void nesterov_step(const float* u, const float* v, const float* g, const float* 
 enum { LAM, GAM, PCOEF, ALPHA, A, ITER, HPWL_PREV, MOTION, WW, MU, SETTLED, BEST_HPWL, BEST_OVF, IS_BEST, IMPROVED, STOP, BT,
        BT_TOTAL, ACCEPT, LOOP_IT, EVALS, RES_HPWL, RES_OVF, HAS_BEST };
 enum { C_BASE_GAMMA, C_MOTION_UNIT, C_TOTAL_PINS, C_TOTAL_AREA, C_REF_MOTION, C_MIN_ITER, C_STOP_OVF, C_SETTLE,
-       C_STALL, C_INNER, C_MAX_BT };
+       C_STALL, C_INNER, C_MAX_BT, C_REFINE, C_ACCURACY };
 
 __global__ void control_kernel(double* S, float* kp, const double* c, const float* moved_p, const float* turned_p,
-                               const float* hpwl_p, const float* ovf_p) {
+                               const float* hpwl_p, const float* ovf_p, const float* wa_p) {
     S[ACCEPT] = 0; S[IS_BEST] = 0;
     if (S[STOP] != 0) return;                                      // stopped: every later pass changes nothing
-    double moved = *moved_p, turned = *turned_p, hpwl = *hpwl_p, ovf = *ovf_p;
+    double moved = *moved_p, turned = *turned_p, hpwl = *hpwl_p, ovf = *ovf_p, wa = *wa_p;
     if (!(isfinite(moved) && isfinite(turned) && isfinite(hpwl) && isfinite(ovf))) {
         S[STOP] = 3; return;                                       // diverged: the step is not taken
     }
@@ -203,7 +203,13 @@ __global__ void control_kernel(double* S, float* kp, const double* c, const floa
     S[WW] = part / (c[C_TOTAL_PINS] + part);
     double mu = hpwl < S[HPWL_PREV] ? 1.05 * 0.98 : 1.05 * fmax(pow(1.05, -S[MOTION] / c[C_REF_MOTION]), 0.95);
     S[HPWL_PREV] = hpwl; S[MU] = mu; S[LAM] *= mu;
-    S[GAM] = c[C_BASE_GAMMA] * pow(10.0, (ovf - 0.1) * 20 / 9 - 1);
+    if (c[C_ACCURACY] != 0) {                                      // ParamScheduler.smoothing, --wa_rule accuracy
+        double err = fmax(1e-6, 1 - wa / fmax(hpwl, 1e-12));
+        double g = S[GAM] * fmin(1.1, fmax(0.9, sqrt(fmax(ovf, 1e-3) / c[C_REFINE] / err)));
+        S[GAM] = fmin(100 * c[C_BASE_GAMMA], fmax(0.01 * c[C_BASE_GAMMA], g));
+    } else {
+        S[GAM] = c[C_BASE_GAMMA] * pow(10.0, (ovf - 0.1) * 20 / 9 - 1);
+    }
     if (ovf < 0.3 && S[PCOEF] < 1024 && fmod(iter, 20.0) == 0) S[PCOEF] *= 2;
     S[ITER] = iter = iter + 1;
     // ParamScheduler.need_to_stop
@@ -246,8 +252,8 @@ __global__ void select_kernel(const double* S, float* u, float* v, float* g, con
 }
 
 void control(double* S, float* kp, const double* c, const float* moved, const float* turned, const float* hpwl,
-             const float* ovf) {
-    control_kernel<<<1, 1>>>(S, kp, c, moved, turned, hpwl, ovf);
+             const float* ovf, const float* wa) {
+    control_kernel<<<1, 1>>>(S, kp, c, moved, turned, hpwl, ovf, wa);
 }
 
 void select_step(const double* S, float* u, float* v, float* g, const float* u_next, const float* v_next,

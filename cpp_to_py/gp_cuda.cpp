@@ -9,7 +9,7 @@ void nesterov_step(const float*, const float*, const float*, const float*, const
                    float*, float*);
 void density_grad(const float*, const float*, const float*, const float*, const float*, const float*, const float*, int,
                   int, const float*, const float*, float, float, int, int, float*);
-void control(double*, float*, const double*, const float*, const float*, const float*, const float*);
+void control(double*, float*, const double*, const float*, const float*, const float*, const float*, const float*);
 void select_step(const double*, float*, float*, float*, const float*, const float*, const float*, float*, int);
 
 using torch::Tensor;
@@ -65,9 +65,9 @@ Tensor dgrad(Tensor pos, Tensor size, Tensor ratio, Tensor field, Tensor wl_grad
 }
 
 // one pass of the run's control (see control_kernel): state S [float64], kernel parameters kp [float32 x 5],
-// constants c [float64]; moved / turned / hpwl / overflow are 0-d float32 tensors of the pass
-void ctrl(Tensor S, Tensor kp, Tensor c, Tensor moved, Tensor turned, Tensor hpwl, Tensor ovf) {
-    control(D(S), W(kp), D(c), F(moved), F(turned), F(hpwl), F(ovf));
+// constants c [float64]; moved / turned / hpwl / overflow / WA are 0-d float32 tensors of the pass
+void ctrl(Tensor S, Tensor kp, Tensor c, Tensor moved, Tensor turned, Tensor hpwl, Tensor ovf, Tensor wa) {
+    control(D(S), W(kp), D(c), F(moved), F(turned), F(hpwl), F(ovf), F(wa));
 }
 
 // take the pass's step if it was accepted (u, v, g in place), and copy it to best if it is the best so far

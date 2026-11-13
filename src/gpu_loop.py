@@ -50,7 +50,8 @@ def run_level_on_gpu(optimizer, objective, ps, args, logger, iteration, check_ev
                       dtype=torch.float32, device=device)
     a = ps.args
     c = torch.tensor([ps.base_gamma, ps.motion_unit, ps.total_pins, ps.total_area, a.ref_motion, a.min_iter,
-                      a.stop_overflow, a.settle_iter, a.stall_iter, args.inner_iter, optimizer.max_backtrack],
+                      a.stop_overflow, a.settle_iter, a.stall_iter, args.inner_iter, optimizer.max_backtrack, ps.refine,
+                      float(a.wa_rule == "accuracy")],
                      dtype=torch.float64, device=device)
     u, g, lo, hi = optimizer.u, optimizer.g, optimizer.lo, optimizer.hi
     best = pos.clone()
@@ -60,7 +61,8 @@ def run_level_on_gpu(optimizer, objective, ps, args, logger, iteration, check_ev
         for _ in range(check_every):
             u_next, v_next = gp_cuda.nesterov_step(u, pos, g, lo, hi, kp[3:4], kp[4:5])
             g_next = objective.on_gpu(v_next, kp)
-            gp_cuda.control(S, kp, c, torch.dist(v_next, pos), torch.dist(g_next, g), objective.hpwl, objective.overflow)
+            gp_cuda.control(S, kp, c, torch.dist(v_next, pos), torch.dist(g_next, g), objective.hpwl, objective.overflow,
+                            objective.wa)
             gp_cuda.select(S, u, pos, g, u_next, v_next, g_next, best)
         stop, it, lam, gam, hpwl, ovf = S[watch].tolist()          # the only transfer: every check_every passes
         if int(it) // args.log_freq > logged:
