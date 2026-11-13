@@ -82,7 +82,6 @@ The same input, options and GPU give the same `gp.def`.
 | `--ignore_net_degree` | 100 | nets with more pins are not optimized (still counted in the HPWL) |
 | `--start_tol` | 1e-3 | the wirelength-only start ends when the WA wirelength falls by less than this share per iteration |
 | `--density_weight` | 1e-3 | first density weight, as a share of the full wire tension |
-| `--ref_motion` | 5.0 | cell motion per iteration (RMS, in cell pitches) at which the density weight stops growing |
 | `--wa_coeff` | 4.0 | unit of the WA smoothing, in bin sizes (as Xplace); the smoothing starts at 10 units |
 | `--wa_rule` | accuracy | how the WA smoothing follows the run: `accuracy` = from the measured model error, `overflow` = Xplace's formula |
 | `--cluster_ratio` | 5 | cells per cluster for the two-level placement; 1 = one level |
@@ -98,7 +97,7 @@ In `--out_dir`:
   statements of the moved cells change). Not written when the placement is not finite.
 - `metrics.json`: the design (`num_movable`, `num_nets`, `num_pins`, `num_fillers`), the grids (`num_bin`,
   `force_num_bin`, `coarse_num_bin`), the run (`stop_reason`: converged / stalled / diverged / max_iter, `iters`,
-  `start_iters`, `coarse_iters`, `clusters`, `grad_calls`, `backtracks`), the result (`hpwl_sites`, `hpwl_um`,
+  `start_iters`, `coarse_iters`, `clusters`, `grad_calls`), the result (`hpwl_sites`, `hpwl_um`,
   `overflow`: exact overflow of the real cell sizes on the `--num_bin` grid) and the times (`parse_time_s`,
   `cluster_time_s`, `gp_time_s`, `per_iter_s`, `write_time_s`, `total_time_s`).
 - `placer.log`: the options, the design, the progress and warnings.
@@ -106,7 +105,7 @@ In `--out_dir`:
 ## How it works
 
 The objective is the one of ePlace / Xplace: WA wirelength + density weight x electrostatic density energy,
-minimized by Nesterov's method with a Barzilai-Borwein step and backtracking, each node's gradient divided by
+minimized by Nesterov's method with a Barzilai-Borwein step, each node's gradient divided by
 max(1, pins + coefficient x density weight x area). Fillers take the free area the cells do not need. These parts
 follow Xplace; what AutoPlace changes is how a run is driven:
 
@@ -117,10 +116,11 @@ follow Xplace; what AutoPlace changes is how a run is driven:
 2. **First density weight in tension units.** The first weight is `--density_weight` x (number of pins / L1 norm of
    the density gradient of the cells): the weight at which the density force on the cells equals every pin pulling
    at full tension. It means the same on any cell library or length unit.
-3. **Weight growth by cell motion.** Every iteration the weight is multiplied by 1.05^(1 - motion / `--ref_motion`)
-   (at least 1.05 x 0.95), motion being the RMS move of the nodes in the last iteration in cell pitches; by
-   1.05 x 0.98 when the HPWL fell. The weight grows fast while the cells move little and slows when the optimizer
-   falls behind. There is no length constant and no slow window.
+3. **Weight growth by cell motion, against the wirelength model.** Every iteration the weight is multiplied by
+   1.05^(1 - move / gamma) (at least 1.05 x 0.95), move being the RMS move of the nodes in the last iteration and
+   gamma the smoothing of the wirelength model; by 1.05 x 0.98 when the HPWL fell. The model resolves the order of
+   cells closer than about gamma, so the weight grows fast while the cells move less than that and slows when they
+   move further than the model can follow. There is no length constant and no slow window.
 4. **Two levels.** The cells are merged into clusters of about `--cluster_ratio` cells (star matching on the GPU: in
    each round half of the clusters are heads and every other cluster joins the head it shares the most net weight
    with per unit of merged area; a net of d pins gives 1 / (d - 1) to each pair; macros stay alone). The clusters
@@ -132,14 +132,17 @@ follow Xplace; what AutoPlace changes is how a run is driven:
    same rule with their own count. With many small cells per bin, the smoothed density (each cell widened to
    sqrt(2) bins) cannot see clumps of bin size and the field does not push them apart. The overflow (stop,
    schedule, report) stays on the `--num_bin` grid, so it means the same as with a single grid.
-6. **The run controlled on the GPU.** Once the density weight is on, the step length, the backtracking, the density
+6. **The run controlled on the GPU.** Once the density weight is on, the step length, the density
    weight, the WA smoothing, the preconditioner and the stop rules are decided by one GPU thread, in double
    precision; the kernels read their parameters from device memory and the host only looks every 16 iterations
    whether the run has stopped.
 7. **WA smoothing from the measured model error.** Instead of Xplace's fixed curve of the overflow, the smoothing
    keeps the error of the wirelength model (1 - WA / HPWL) at the overflow divided by the grid refinement, so it
    adapts to each design and to the resolution of the density force (below).
-8. **Own CUDA kernels and DEF reader / writer.** The density map and the wirelength are summed in a fixed order or
+8. **Every step taken.** The step length (Barzilai-Borwein, |move| / |gradient change|) measured on a step is used
+   for the next one. Xplace redoes a step whose estimate shrank by more than 5 %; those redone steps cost about 9 %
+   of the gradient evaluations and change almost nothing.
+9. **Own CUDA kernels and DEF reader / writer.** The density map and the wirelength are summed in a fixed order or
    in fixed point, so the same input gives the same bits.
 
 Stops: `converged` (overflow under `--stop_overflow`, then `--settle_iter` more iterations, lowest HPWL kept),

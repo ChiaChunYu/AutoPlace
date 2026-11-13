@@ -170,14 +170,14 @@ void nesterov_step(const float* u, const float* v, const float* g, const float* 
 }
 
 // ---------------------------------------------------------------- control of the run, on the GPU
-// One thread: what NesterovOptimizer.step (backtracking), ParamScheduler.step and ParamScheduler.need_to_stop do
+// One thread: what NesterovOptimizer.step (the step length), ParamScheduler.step and ParamScheduler.need_to_stop do
 // on the host, in the same order and in double precision, so that a run needs no transfer to the host per
 // iteration. S is the state (layout: FIELDS in src/gpu_loop.py), kp the float parameters the other kernels read
 // (gamma, density weight, density weight x precond_coef, alpha, coef), c the constants of the run.
-enum { LAM, GAM, PCOEF, ALPHA, A, ITER, HPWL_PREV, MOTION, WW, MU, SETTLED, BEST_HPWL, BEST_OVF, IS_BEST, IMPROVED, STOP, BT,
-       BT_TOTAL, ACCEPT, LOOP_IT, EVALS, RES_HPWL, RES_OVF, HAS_BEST };
-enum { C_BASE_GAMMA, C_MOTION_UNIT, C_TOTAL_PINS, C_TOTAL_AREA, C_REF_MOTION, C_MIN_ITER, C_STOP_OVF, C_SETTLE,
-       C_STALL, C_INNER, C_MAX_BT, C_REFINE, C_ACCURACY };
+enum { LAM, GAM, PCOEF, ALPHA, A, ITER, HPWL_PREV, MOTION, WW, MU, SETTLED, BEST_HPWL, BEST_OVF, IS_BEST, IMPROVED, STOP,
+       ACCEPT, LOOP_IT, EVALS, RES_HPWL, RES_OVF, HAS_BEST };
+enum { C_BASE_GAMMA, C_MOTION_UNIT, C_TOTAL_PINS, C_TOTAL_AREA, C_PITCH, C_MIN_ITER, C_STOP_OVF, C_SETTLE,
+       C_STALL, C_INNER, C_REFINE, C_ACCURACY };
 
 __global__ void control_kernel(double* S, float* kp, const double* c, const float* moved_p, const float* turned_p,
                                const float* hpwl_p, const float* ovf_p, const float* wa_p) {
@@ -187,21 +187,17 @@ __global__ void control_kernel(double* S, float* kp, const double* c, const floa
     if (!(isfinite(moved) && isfinite(turned) && isfinite(hpwl) && isfinite(ovf))) {
         S[STOP] = 3; return;                                       // diverged: the step is not taken
     }
-    double alpha_next = turned > 0 ? moved / turned : S[ALPHA];
-    bool good = alpha_next > 0.95 * S[ALPHA];
-    if (!good) S[BT_TOTAL] += 1;
-    bool accept = good || S[BT] >= c[C_MAX_BT] - 1;
+    double alpha_next = turned > 0 ? moved / turned : S[ALPHA];      // every step is taken, its estimate is the next
     S[ALPHA] = alpha_next;
     S[EVALS] += 1;
-    if (!accept) { S[BT] += 1; kp[3] = (float)alpha_next; return; }  // the step is redone with the new alpha
-    S[BT] = 0; S[ACCEPT] = 1;
+    S[ACCEPT] = 1;
     S[A] = (1 + sqrt(4 * S[A] * S[A] + 1)) / 2;
     // ParamScheduler.step
     double iter = S[ITER];
     S[MOTION] = moved / c[C_MOTION_UNIT];
     double part = S[PCOEF] * S[LAM] * c[C_TOTAL_AREA];
     S[WW] = part / (c[C_TOTAL_PINS] + part);
-    double mu = hpwl < S[HPWL_PREV] ? 1.05 * 0.98 : 1.05 * fmax(pow(1.05, -S[MOTION] / c[C_REF_MOTION]), 0.95);
+    double mu = hpwl < S[HPWL_PREV] ? 1.05 * 0.98 : 1.05 * fmax(pow(1.05, -S[MOTION] * c[C_PITCH] / S[GAM]), 0.95);
     S[HPWL_PREV] = hpwl; S[MU] = mu; S[LAM] *= mu;
     if (c[C_ACCURACY] != 0) {                                      // ParamScheduler.smoothing, --wa_rule accuracy
         double err = fmax(1e-6, 1 - wa / fmax(hpwl, 1e-12));

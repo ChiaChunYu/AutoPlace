@@ -41,7 +41,6 @@ def get_option(argv=None):
     p.add_argument("--wa_rule", choices=["accuracy", "overflow"], default="accuracy",
                    help="how the WA smoothing follows the run: accuracy = from the measured model error 1 - WA / HPWL, "
                         "kept at the overflow / grid refinement; overflow = Xplace's formula of the overflow")
-    p.add_argument("--ref_motion", type=float, default=5.0, help="move per iteration (RMS, in cell pitches) at which the density weight stops growing")
     p.add_argument("--cluster_ratio", type=float, default=5, help="clusters of this many cells are placed first, then the cells (two levels); 1 = cells only")
     p.add_argument("--handover_overflow", type=float, default=0.7, help="overflow of the clusters at which the cells take over")
     p.add_argument("--lr", type=float, default=0.01, help="length of the probe step that sets the first step size")

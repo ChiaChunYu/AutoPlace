@@ -47,8 +47,7 @@ def _place_level(pos, objective, ps, args, logger, first_iter=0):
     for iteration in range(first_iter, args.inner_iter):
         if ps.density_weight > 0 and gpu_loop.usable(optimizer):     # the rest of the level: control on the GPU
             reason, iters, hpwl, overflow = gpu_loop.run_level_on_gpu(optimizer, objective, ps, args, logger, iteration)
-            return SimpleNamespace(reason=reason, iters=iters, start_iters=start_iters, hpwl=hpwl, overflow=overflow,
-                                   backtracks=optimizer.backtracks)
+            return SimpleNamespace(reason=reason, iters=iters, start_iters=start_iters, hpwl=hpwl, overflow=overflow)
         optimizer.step()
         if optimizer.diverged:
             reason = "diverged"
@@ -73,8 +72,7 @@ def _place_level(pos, objective, ps, args, logger, first_iter=0):
     if best:
         pos.copy_(best[0])
         hpwl, overflow = best[1:]
-    return SimpleNamespace(reason=reason, iters=iteration + 1, start_iters=start_iters, hpwl=hpwl, overflow=overflow,
-                           backtracks=optimizer.backtracks)
+    return SimpleNamespace(reason=reason, iters=iteration + 1, start_iters=start_iters, hpwl=hpwl, overflow=overflow)
 
 
 def global_placement_main(data, wirelength, density, pos, node_size, fixed_fraction, args, logger):
@@ -84,7 +82,7 @@ def global_placement_main(data, wirelength, density, pos, node_size, fixed_fract
     start = time.time()
     ps = _scheduler(density, n, data.mov_area, float(data.cell_pins.sum()), float(node_size.prod(1).sum()), len(node_size), args, logger)
     objective = Objective(wirelength, density, ps)
-    stats, evals, backtracks, first_iter, start_iters = {}, 0, 0, 0, 0
+    stats, evals, first_iter, start_iters = {}, 0, 0, 0
     if args.cluster_ratio > 1:                                  # two levels: the clusters first
         coarse = coarse_problem(data, node_size, wirelength, density, fixed_fraction, args)
         _sync(device)
@@ -103,7 +101,7 @@ def global_placement_main(data, wirelength, density, pos, node_size, fixed_fract
         ps.resume(cps, weight, wirelength.forward(pos, ps.wa_coeff)[2].item(), density.forward(pos)[1].item())
         logger.info("clusters placed after %d iterations (stop: %s, hpwl %.4E, overflow %.4f): the cells take over, density weight %.4E"
                     % (level.iters, level.reason, level.hpwl, level.overflow, weight))
-        evals, backtracks, first_iter, start_iters = cobjective.evals, level.backtracks, level.iters, level.start_iters
+        evals, first_iter, start_iters = cobjective.evals, level.iters, level.start_iters
         stats["coarse_iters"] = level.iters
         del coarse, cobjective, cps, cpos              # the cluster problem is not needed any more: free its memory
     level = _place_level(pos, objective, ps, args, logger, first_iter)
@@ -112,7 +110,7 @@ def global_placement_main(data, wirelength, density, pos, node_size, fixed_fract
     logger.info("GP stop (%s): #iters %d hpwl: %.6E overflow: %.4f GP time: %.4fs per iter: %.6fs (%d gradient calls)"
                 % (level.reason, iters, level.hpwl, level.overflow, gp_time, gp_time / iters, evals + objective.evals))
     stats.update({"stop_reason": level.reason, "iters": iters, "start_iters": start_iters or level.start_iters, "gp_time_s": gp_time,
-                  "per_iter_s": gp_time / iters, "grad_calls": evals + objective.evals, "backtracks": backtracks + level.backtracks})
+                  "per_iter_s": gp_time / iters, "grad_calls": evals + objective.evals})
     return stats
 
 

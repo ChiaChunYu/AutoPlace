@@ -3,8 +3,8 @@
     density_weight  0 during the wirelength-only start, which ends when the WA wirelength has converged
                     (`--start_tol`); then set so that the density force on the cells is `--density_weight` of the
                     full wire tension (every pin pulling), and from there multiplied every iteration by at most
-                    1.05: less the further the nodes moved in the last iteration, counted in cell pitches
-                    (`--ref_motion`), and less when the HPWL fell (the wirelength is still catching up); updated
+                    1.05: less the further the nodes moved in the last iteration, against the smoothing gamma of the
+                    wirelength model (how far it resolves the order of cells), and less when the HPWL fell (the wirelength is still catching up); updated
                     every iteration (the motion is what slows it down, no fixed slow window)
     wa_coeff        the smoothing gamma of the WA wirelength, starting at 10 x the unit (`--wa_coeff` x bin sizes).
                     --wa_rule accuracy: every iteration multiplied by sqrt(target / error), within 0.9 to 1.1, where
@@ -30,6 +30,7 @@ class ParamScheduler(object):
         self.density_weight = 0.0
         self.precond_coef = 1.0
         self.total_pins, self.total_area = data.total_pins, data.total_area      # over every node (fillers: 0 pins)
+        self.pitch = data.pitch
         self.motion_unit = data.pitch * math.sqrt(data.num_nodes)     # L2 norm of "every node moved one cell pitch"
         self.motion = 0.0                       # RMS move of the nodes in the last iteration, in cell pitches
         self.weighted_weight = 0.0              # share of the density term in the preconditioner, 0..1
@@ -78,12 +79,13 @@ class ParamScheduler(object):
         return min(100 * self.base_gamma, max(0.01 * self.base_gamma, g))
 
     def growth(self):
-        """1.05 ^ (1 - motion / --ref_motion), not below 1.05 x 0.95: the wirelength can only re-order cells that
-        pass few neighbours per iteration, so the weight grows slower the more cell pitches the nodes move (a large
-        design moves several per iteration, a small one a fraction). 1.05 x 0.98 when the HPWL fell."""
+        """1.05 ^ (1 - move / gamma), not below 1.05 x 0.95, move = the RMS move of the nodes in the last iteration:
+        the wirelength model resolves the order of cells closer than about its smoothing gamma, so the weight grows
+        slower when the nodes move further than that per iteration (the model can no longer follow). 1.05 x 0.98
+        when the HPWL fell."""
         if self.hpwl[-1] < self.hpwl[-2]:
             return 1.05 * 0.98
-        return 1.05 * max(1.05 ** (-self.motion / self.args.ref_motion), 0.95)
+        return 1.05 * max(1.05 ** (-self.motion * self.pitch / self.wa_coeff), 0.95)
 
     def need_to_stop(self):
         """-> reason to stop, or None; sets `is_best` when the caller should keep the current placement.
