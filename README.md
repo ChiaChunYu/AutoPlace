@@ -9,10 +9,12 @@ is carried out. First, the density grid is chosen from the design, with about on
 density force can see clumps that a coarse grid would hide. Next, the cells are merged into clusters of about five
 cells by matching them along their nets, and the clusters are placed first. The placement then starts from
 wirelength alone: the density is switched on only once the wirelength has settled, with a first density weight
-set in units of the wire tension, and the weight grows each iteration by how far the cells moved. When the
+set in units of the wire tension, and the weight grows each iteration unless the cells move further than the
+wirelength model can follow. When the
 clusters are spread enough, every cell starts inside its cluster and the run continues on the cells with the same
-weight, until the overflow is reached. The smoothing of the wirelength model follows its measured error instead of a fixed curve. During the run
-the step size, the density weight, the smoothing and the stop are decided on the GPU, so the host never waits on an iteration.
+weight, until the overflow is reached. The smoothing of the wirelength model follows its measured error instead of
+a fixed curve. During the run the step size, the density weight, the smoothing and the stop are decided on the
+GPU, so the host never waits on an iteration.
 
 On the ISPD 2015 / 2019 benchmarks it uses about half of Xplace's iterations and a third of its global-placement
 time, at a slightly lower HPWL ([Results](#results)). Details of each step are in [How it works](#how-it-works).
@@ -162,8 +164,8 @@ Against Xplace (upstream, same LEF / DEF, target density and overflow grid, each
 
 | Benchmark | Designs | HPWL / Xplace | Iterations / Xplace | GP time / Xplace |
 |---|---|---|---|---|
-| ISPD 2019 | 9 (test1-4, 6-10; 8 k to 900 k cells) | 0.9974 | 0.557 | 0.36 |
-| ISPD 2015 | 18 (fences removed as in Xplace; 30 k to 1.3 M cells) | 0.9962 | 0.545 | 0.31 |
+| ISPD 2019 | 9 (test1-4, 6-10; 8 k to 900 k cells) | 0.9989 | 0.509 | 0.34 |
+| ISPD 2015 | 18 (fences removed as in Xplace; 30 k to 1.3 M cells) | 0.9948 | 0.541 | 0.29 |
 
 GP time: global placement only (for AutoPlace, clustering and both levels), median of 3 runs on an RTX 3070.
 
